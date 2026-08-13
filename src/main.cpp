@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
         std::optional<std::string> current_key;
         std::optional<aerial_touch::PressEvent> last_event;
         bool calibrating = false;
-        std::string status = hand_tracker.available() ? "Press C to calibrate" : hand_tracker.error();
+        std::string status = hand_tracker.available() ? "Press C to set the keypad area" : hand_tracker.error();
         auto fps_start = std::chrono::steady_clock::now();
         int fps_frames = 0;
         float fps = 0.0F;
@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
                                        + " mm | Key: " + current_key.value_or("-"), 5);
             }
             text_line(display, "Touch: " + std::string(touch.armed() ? "ARMED" : "WAIT RELEASE"), 6);
-            text_line(display, "Calibration: " + std::string(calibrating ? "CAPTURE O/U/V " : (plane ? "READY " : "NOT SET "))
+            text_line(display, "Calibration: " + std::string(calibrating ? "SET START/RIGHT/DOWN " : (plane ? "READY " : "NOT SET "))
                                    + std::to_string(calibration_points.size()) + "/3", 7);
             text_line(display, "Status: " + status, 8, { 80, 230, 255 });
             text_line(display, "C calibrate | Space capture | Enter solve | R reset | Q/Esc quit", 9);
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
                 calibration_points.clear();
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
-                status = "Aim fingertip at O and press Space";
+                status = "Point at keypad start (top-left of 1); press Space";
             }
             else if(key == ' ' && calibrating) {
                 if(!current_xyz.has_value()) {
@@ -248,10 +248,14 @@ int main(int argc, char** argv) {
                 }
                 else if(calibration_points.size() < 3U) {
                     calibration_points.push_back(*current_xyz);
-                    static constexpr std::array<const char*, 3> names{ "O", "U", "V" };
+                    static constexpr std::array<const char*, 3> names{
+                        "keypad start (top-left of 1)",
+                        "a point to the right (toward 3)",
+                        "a point below the start (toward 0)",
+                    };
                     status = std::string("Captured ") + names[calibration_points.size() - 1U];
                     if(calibration_points.size() < 3U) {
-                        status += std::string("; aim at ") + names[calibration_points.size()] + " and press Space";
+                        status += std::string("; next: ") + names[calibration_points.size()] + "; press Space";
                     }
                     else {
                         status += "; press Enter to solve";
@@ -260,7 +264,7 @@ int main(int argc, char** argv) {
             }
             else if(key == 13 && calibrating) {
                 if(calibration_points.size() != 3U) {
-                    status = "Capture O, U and V before solving";
+                    status = "Capture start, right and down points before solving";
                 }
                 else {
                     plane = aerial_touch::Plane::from_calibration_points(calibration_points[0], calibration_points[1],
@@ -280,7 +284,7 @@ int main(int argc, char** argv) {
                 calibration_points.clear();
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
-                status = "Reset complete; press C to calibrate";
+                status = "Reset complete; press C to set the keypad area";
             }
         }
         camera.stop();
