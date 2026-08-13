@@ -1,0 +1,134 @@
+# Gemini 2 空中虛擬鍵盤操作指南
+
+本指南面向第一次使用 App 的使用者，說明如何從啟動程式開始，完成校正並操作空中虛擬數字鍵盤。
+
+> 目前版本是 MVP 原型。按鍵事件只會顯示在 App 視窗與終端機輸出，不會替 Windows 或其他程式實際輸入數字。
+
+## 一、啟動前準備
+
+請先確認：
+
+1. Orbbec Gemini 2 已透過 USB 連接到電腦。
+2. 相機前方有足夠空間，讓手指可以在鏡頭前伸出並移動。
+3. App 的輸出資料夾包含完整 runtime，而不只是 `aerial_touch_app.exe`。至少要保留 `extensions/`、Orbbec SDK DLL、MediaPipe bridge DLL、手部模型及 `config/default.yaml`。
+
+如果尚未建置 App，請先參考 README 的建置說明。建置完成後，執行輸出目錄通常是 `build/windows-debug`。
+
+## 二、啟動 App
+
+在 Visual Studio Developer PowerShell 或一般 PowerShell 中執行：
+
+```powershell
+Set-Location build/windows-debug
+.\aerial_touch_app.exe
+```
+
+請從 `build/windows-debug` 啟動，因為 App 預設會用相對路徑尋找設定檔、模型與 DLL。
+
+啟動後會出現名為 `Gemini 2 Aerial Keypad` 的 OpenCV 視窗。畫面會顯示相機影像、手部骨架、右下角的數字鍵盤，以及目前追蹤與校正狀態。
+
+如果啟動失敗，先確認相機已連接、輸出資料夾完整，並從終端機查看錯誤訊息。
+
+## 三、先認識畫面資訊
+
+| 顯示項目 | 意義 |
+| --- | --- |
+| `FPS` | 目前影像更新速度。 |
+| `Tracker: hand` | 已偵測到手部。`no hand` 表示目前沒有偵測到手。 |
+| `Tracker: unavailable` | MediaPipe bridge 或手部模型無法載入，不能進行手部操作。 |
+| `XYZ` | 指尖在相機座標中的三維位置。 |
+| `Plane UV` | 指尖投影到校正平面後的位置。 |
+| `Distance` | 指尖與虛擬平面的距離，單位是 mm。 |
+| `Key` | 指尖目前位於哪個數字鍵；不在鍵內時通常顯示 `-`。 |
+| `Touch: ARMED` | 已準備好接受下一次觸控。 |
+| `Touch: WAIT RELEASE` | 仍視為手指停留在按鍵附近，需先離開後才會重新準備。 |
+| `Calibration` | 校正狀態。`NOT SET` 表示尚未完成，`READY` 表示可以操作。 |
+| `Last event` | 最近一次觸控事件的按鍵。 |
+
+指尖會以較大的紅色標記顯示；其他手部關節則以骨架線與小圓點顯示。
+
+## 四、完成三點校正
+
+校正是必要步驟，用來告訴 App 虛擬鍵盤所在的平面方向與位置。每次重新啟動 App，或相機、鍵盤位置明顯改變時，都建議重新校正。
+
+### 1. 開始校正
+
+將手伸到預定操作平面附近，確認畫面可看到手部骨架後，按下鍵盤上的 `C`。畫面會提示 `Aim fingertip at O and press Space`，請把食指指尖移到第一個校正點 O。
+
+### 2. 擷取 O、U、V
+
+依序將食指指尖放到三個校正位置，每次保持短暫穩定後按 `Space`：
+
+1. **O：** 虛擬鍵盤左上方的基準位置。
+2. **U：** 鍵盤平面上的右側位置，與 O 保持明顯距離。
+3. **V：** 鍵盤平面上的下側位置，與 O、U 不要在同一直線上。
+
+成功擷取後，畫面會依序顯示 `Captured O`、`Captured U`、`Captured V`。第三點完成後會提示 `press Enter to solve`。
+
+### 3. 解算校正平面
+
+確認三點都已擷取後按 `Enter`。
+
+- 成功時：顯示 `Calibration ready`，`Calibration` 會變成 `READY 3/3`，即可開始操作。
+- 失敗時：顯示 `Calibration rejected`。通常是三點太靠近，或三點幾乎在同一直線上。請按 `R` 重設後，重新擷取距離更大的 O、U、V 三點。
+
+校正時請避免快速移動手指，也不要讓手部在擷取瞬間離開畫面。如果深度資料無效，App 會顯示 `Cannot capture: fingertip depth is invalid`，請調整手指位置或距離後再按一次 `Space`。
+
+## 五、操作虛擬鍵盤
+
+校正完成後：
+
+1. 將食指指尖移到右下角顯示的數字鍵上方。
+2. 從平面上方朝按鍵方向靠近，讓指尖穿過觸控門檻。
+3. 觀察終端機或畫面的 `Last event`，確認已產生按鍵事件。
+4. 要按下一個鍵時，先把指尖離開平面，再移向下一個鍵。
+
+每次靠近只會觸發一次。手指停留在同一個鍵上時，不會連續重複觸發；離開後才會重新準備下一次觸控。
+
+成功觸發時，終端機會輸出類似：
+
+```text
+PRESS key=5 timestamp_ms=... xyz_mm=(...) uv_mm=(...)
+```
+
+這個輸出只是事件紀錄，不會自動把 `5` 打進記事本、瀏覽器或其他 Windows 應用程式。
+
+## 六、重新校正與離開 App
+
+| 按鍵 | 功能 |
+| --- | --- |
+| `C` | 清除目前校正並開始新的 O／U／V 校正。 |
+| `R` | 重設校正與觸控狀態，回到等待 `C` 的狀態。 |
+| `Q` 或 `Esc` | 離開 App。 |
+
+結束前可先移開手指，再按 `Q` 或 `Esc`。App 會關閉相機串流與影像視窗。
+
+## 七、常見問題
+
+### 畫面沒有出現，或 App 啟動後立即結束
+
+請確認 Gemini 2 已連接且沒有被其他程式獨占；你是在 `build/windows-debug` 目錄執行；以及 `OrbbecSDK.dll`、`OrbbecSDKConfig.xml` 與 `extensions/frameprocessor/ob_frame_processor.dll` 都存在。
+
+### 顯示 `Tracker: unavailable`
+
+請確認 `mediapipe_hand_bridge.dll` 與 `assets/models/hand_landmarker.task` 存在，而且啟動時使用的路徑正確。若模型尚未下載，請依 README 的 MediaPipe bridge 建置步驟完成下載與建置。
+
+### 顯示 `no hand`
+
+請把整隻手移到相機可見範圍內，並確認光線足夠。讓食指伸直，避免手指被其他物體遮住。
+
+### 指尖看得到，但無法擷取校正點
+
+畫面可能偵測到手部影像，卻沒有取得有效深度。請讓指尖不要太靠近或太遠離相機，避開反光或純黑表面，穩定幾秒後再按 `Space`。
+
+### 校正成功但按鍵沒有事件
+
+確認 `Calibration` 顯示 `READY`，並依照「先靠近、再離開」的方式操作。若 `Touch` 顯示 `WAIT RELEASE`，請先把指尖移離虛擬平面，也要確認指尖位於右下角數字鍵盤顯示的按鍵範圍內。
+
+## 八、目前版本限制
+
+- 目前只支援單手追蹤。
+- 目前只提供數字鍵盤與畫面／終端機事件輸出。
+- 不會注入 Windows 系統鍵盤事件。
+- 不包含 ASKA3D、雙手操作或 GUI 設定面板。
+- 實機互動效果仍需依相機位置、光線、手部距離與平面配置進一步驗收。

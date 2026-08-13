@@ -1,0 +1,13 @@
+diff --git a/mediapipe/gpu/gpu_service.cc b/mediapipe/gpu/gpu_service.cc
+index 6d7d280d..566b55a5 100644
+--- a/mediapipe/gpu/gpu_service.cc
++++ b/mediapipe/gpu/gpu_service.cc
+@@ -16,7 +16,7 @@ limitations under the License.
+ 
+ namespace mediapipe {
+ 
+-const GraphService<GpuResources> kGpuService(
++ABSL_CONST_INIT const GraphService<GpuResources> kGpuService(
+     "kGpuService", GraphServiceBase::kAllowDefaultInitialization);
+ 
+ }  // namespace mediapipe

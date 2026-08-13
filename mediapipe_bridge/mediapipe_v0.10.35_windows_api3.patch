@@ -1,0 +1,13 @@
+diff --git a/mediapipe/framework/api3/graph.h b/mediapipe/framework/api3/graph.h
+index 20da4c8e..104b9490 100644
+--- a/mediapipe/framework/api3/graph.h
++++ b/mediapipe/framework/api3/graph.h
+@@ -105,6 +105,8 @@ namespace mediapipe::api3 {
+ //   graph.detections.Set(detections);
+ // ```
+ class GenericGraph;
++template <typename NodeT>
++class SubgraphContext;
+ class FunctionGraphBuilder;
+ 
+ // `GraphNode` is returned by `Graph<...>::AddNode<...>()` function.

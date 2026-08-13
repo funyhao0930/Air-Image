@@ -1,0 +1,23 @@
+diff --git a/mediapipe/calculators/tensor/image_to_tensor_calculator.h b/mediapipe/calculators/tensor/image_to_tensor_calculator.h
+index ce266c99..a5cfc39b 100644
+--- a/mediapipe/calculators/tensor/image_to_tensor_calculator.h
++++ b/mediapipe/calculators/tensor/image_to_tensor_calculator.h
+@@ -31,9 +31,6 @@ limitations under the License.
+ 
+ namespace mediapipe::api3 {
+ 
+-inline constexpr absl::string_view kImageToTensorNodeName =
+-    "ImageToTensorCalculator";
+-
+ // Converts image into Tensor, possibly with cropping, resizing and
+ // normalization, according to specified inputs and options.
+ //
+@@ -64,7 +61,7 @@ inline constexpr absl::string_view kImageToTensorNodeName =
+ //       }
+ //     }
+ //   }
+-struct ImageToTensorNode : Node<kImageToTensorNodeName> {
++struct ImageToTensorNode : Node<"ImageToTensorCalculator"> {
+   template <typename S>
+   struct Contract {
+     // Image[ImageFormat::SRGB / SRGBA, GpuBufferFormat::kBGRA32] or

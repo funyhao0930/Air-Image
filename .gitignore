@@ -1,0 +1,9 @@
+/.vs/
+/build/
+/out/
+/vcpkg_installed/
+/bazel-*/
+/third_party/
+/assets/models/*.task
+*.user
+*.log
