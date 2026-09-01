@@ -2,6 +2,7 @@
 #include "aerial_touch/depth_sampler.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/keypad.hpp"
+#include "aerial_touch/keypad_overlay.hpp"
 #include "aerial_touch/orbbec_camera.hpp"
 #include "aerial_touch/plane.hpp"
 #include "aerial_touch/settings_window.hpp"
@@ -99,7 +100,10 @@ void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {
     }
 }
 
-void draw_keypad(cv::Mat& image, const aerial_touch::Keypad& keypad, const std::optional<std::string>& hit) {
+void draw_keypad(cv::Mat& image,
+                 const aerial_touch::Keypad& keypad,
+                 const std::optional<std::string>& hovered_key,
+                 const std::optional<std::string>& pressed_key) {
     constexpr float scale = 1.1F;
     const int origin_x = std::max(0, image.cols - 150);
     const int origin_y = std::max(0, image.rows - 180);
@@ -108,11 +112,17 @@ void draw_keypad(cv::Mat& image, const aerial_touch::Keypad& keypad, const std::
                              origin_y + static_cast<int>(region.v_min_mm * scale),
                              std::max(1, static_cast<int>((region.u_max_mm - region.u_min_mm) * scale)),
                              std::max(1, static_cast<int>((region.v_max_mm - region.v_min_mm) * scale)) };
-        const bool active = hit.has_value() && *hit == region.key;
-        cv::rectangle(image, rect, active ? cv::Scalar{ 20, 220, 255 } : cv::Scalar{ 230, 230, 230 }, active ? -1 : 2);
+        const auto state = aerial_touch::keypad_key_visual_state(region.key, hovered_key, pressed_key);
+        const bool filled = state != aerial_touch::KeypadKeyVisualState::Idle;
+        const cv::Scalar color = state == aerial_touch::KeypadKeyVisualState::Pressed
+                                     ? cv::Scalar{ 80, 210, 80 }
+                                     : state == aerial_touch::KeypadKeyVisualState::Hover
+                                         ? cv::Scalar{ 20, 220, 255 }
+                                         : cv::Scalar{ 230, 230, 230 };
+        const cv::Scalar text_color = filled ? cv::Scalar{ 0, 0, 0 } : cv::Scalar{ 255, 255, 255 };
+        cv::rectangle(image, rect, color, filled ? -1 : 2);
         cv::putText(image, region.key, { rect.x + rect.width / 3, rect.y + 2 * rect.height / 3 },
-                    cv::FONT_HERSHEY_SIMPLEX, 0.65, active ? cv::Scalar{ 0, 0, 0 } : cv::Scalar{ 255, 255, 255 }, 2,
-                    cv::LINE_AA);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2, cv::LINE_AA);
     }
 }
 
@@ -255,7 +265,11 @@ int main(int argc, char** argv) {
                 fps_start = now;
             }
 
-            draw_keypad(display, keypad, current_key);
+            const std::optional<std::string> last_pressed_key =
+                last_event.has_value() ? std::optional<std::string>{ last_event->key } : std::nullopt;
+            const std::optional<std::string> pressed_key = aerial_touch::currently_pressed_key(
+                last_pressed_key, touch.armed(), current_xyz.has_value(), calibrating);
+            draw_keypad(display, keypad, current_key, pressed_key);
             {
                 aerial_touch::Utf8TextCanvas canvas(display);
                 text_line(canvas, std::string("FPS: ") + std::to_string(static_cast<int>(std::lround(fps)))

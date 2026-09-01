@@ -9,6 +9,26 @@
 
 namespace aerial_touch {
 
+struct SettingsRect {
+    int left{};
+    int top{};
+    int right{};
+    int bottom{};
+};
+
+struct SettingsLayout {
+    SettingsRect touch_group;
+    SettingsRect depth_group;
+    SettingsRect preview_group;
+    SettingsRect keypad_group;
+    SettingsRect preview_rect;
+    int status_y{};
+    int path_y{};
+    int buttons_y{};
+};
+
+SettingsLayout calculate_settings_layout(int client_width, int client_height);
+
 enum class PreviewZone {
     Unknown,
     Touch,

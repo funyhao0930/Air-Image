@@ -23,6 +23,7 @@ add_library(aerial_touch_core STATIC
     src/depth_sampler.cpp
     src/plane.cpp
     src/keypad.cpp
+    src/keypad_overlay.cpp
     src/settings_window.cpp
     src/touch_state_machine.cpp
     src/hand_tracker.cpp

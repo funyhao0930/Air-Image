@@ -1,5 +1,57 @@
 #include "aerial_touch/settings_window.hpp"
 
+#include <algorithm>
+#include <cmath>
+
+namespace aerial_touch {
+
+SettingsLayout calculate_settings_layout(const int client_width, const int client_height) {
+    constexpr int kMargin = 20;
+    constexpr int kColumnGap = 15;
+    constexpr int kPanelTop = 75;
+    constexpr int kPanelGap = 15;
+    constexpr int kBottomReserve = 105;
+    constexpr int kMinimumPanelHeight = 300;
+
+    const int width = std::max(900, client_width);
+    const int height = std::max(780, client_height);
+    const int panel_bottom = std::max(kPanelTop + kMinimumPanelHeight * 2 + kPanelGap,
+                                      height - kBottomReserve);
+    const int available_panel_height = panel_bottom - kPanelTop - kPanelGap;
+    const int top_panel_height = std::max(kMinimumPanelHeight, available_panel_height / 2);
+    const int bottom_panel_top = kPanelTop + top_panel_height + kPanelGap;
+    const int column_width = (width - kMargin * 2 - kColumnGap) / 2;
+    const int right_column_left = kMargin + column_width + kColumnGap;
+
+    SettingsLayout layout;
+    layout.touch_group = { kMargin, kPanelTop, kMargin + column_width, kPanelTop + top_panel_height };
+    layout.depth_group = { kMargin, bottom_panel_top, kMargin + column_width, panel_bottom };
+    layout.preview_group = { right_column_left, kPanelTop, width - kMargin, kPanelTop + top_panel_height };
+    layout.keypad_group = { right_column_left, bottom_panel_top, width - kMargin, panel_bottom };
+    layout.preview_rect = { right_column_left + 15, kPanelTop + 54, width - kMargin - 15, kPanelTop + top_panel_height - 15 };
+    layout.status_y = height - 88;
+    layout.path_y = height - 62;
+    layout.buttons_y = height - 42;
+    return layout;
+}
+
+PreviewZone classify_preview_zone(const std::optional<float> distance_mm,
+                                  const float touch_threshold_mm,
+                                  const float release_threshold_mm) {
+    if(!distance_mm.has_value() || !std::isfinite(*distance_mm)) {
+        return PreviewZone::Unknown;
+    }
+    if(*distance_mm <= touch_threshold_mm) {
+        return PreviewZone::Touch;
+    }
+    if(*distance_mm >= release_threshold_mm) {
+        return PreviewZone::Release;
+    }
+    return PreviewZone::Hold;
+}
+
+}  // namespace aerial_touch
+
 #ifdef _WIN32
 
 #ifndef NOMINMAX
@@ -9,7 +61,6 @@
 #include <windows.h>
 #include <commctrl.h>
 
-#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -221,32 +272,22 @@ void set_window_text(const HWND window, const std::wstring& text) {
 
 }  // namespace
 
-PreviewZone classify_preview_zone(const std::optional<float> distance_mm,
-                                  const float touch_threshold_mm,
-                                  const float release_threshold_mm) {
-    if(!distance_mm.has_value() || !std::isfinite(*distance_mm)) {
-        return PreviewZone::Unknown;
-    }
-    if(*distance_mm <= touch_threshold_mm) {
-        return PreviewZone::Touch;
-    }
-    if(*distance_mm >= release_threshold_mm) {
-        return PreviewZone::Release;
-    }
-    return PreviewZone::Hold;
-}
-
 struct SettingsWindow::Impl {
     HWND hwnd{};
     AppConfig applied_config{};
     std::filesystem::path config_path;
     ApplyCallback apply_callback;
     SettingsPreview preview{};
+    SettingsLayout layout{};
+    std::array<HWND, kFieldCount> labels{};
     std::array<HWND, kFieldCount> edits{};
     std::array<HWND, kFieldCount> sliders{};
+    std::array<HWND, kFieldCount> units{};
     std::array<HWND, kFieldCount> errors{};
     HWND status{};
     HWND path_label{};
+    HWND restore_button{};
+    HWND cancel_button{};
     HWND apply_button{};
     HFONT font{};
     HFONT small_font{};
@@ -293,24 +334,24 @@ struct SettingsWindow::Impl {
         return control;
     }
 
-    void create_field(const int index, const int x, const int y) {
+    void create_field(const int index) {
         const auto& spec = field_specs()[static_cast<std::size_t>(index)];
         const DWORD label_style = WS_CHILD | WS_VISIBLE | SS_LEFT;
-        create_control(L"STATIC", spec.label, label_style, x, y, 125, 38, 0);
+        labels[static_cast<std::size_t>(index)] = create_control(L"STATIC", spec.label, label_style, 0, 0, 0, 0, 0);
 
         const int slider_id = kFirstSliderId + index;
         sliders[static_cast<std::size_t>(index)] = create_control(TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                                                    x + 130, y + 3, 205, 30, slider_id);
+                                                                    0, 0, 0, 0, slider_id);
         SendMessageW(sliders[static_cast<std::size_t>(index)], TBM_SETRANGE, TRUE,
                      MAKELONG(0, static_cast<short>(std::lround(spec.slider_max * spec.slider_scale))));
         SendMessageW(sliders[static_cast<std::size_t>(index)], TBM_SETPAGESIZE, 0, 1);
 
         edits[static_cast<std::size_t>(index)] = create_control(
             L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_RIGHT,
-            x + 340, y + 2, 58, 25, kFirstEditId + index);
+            0, 0, 0, 0, kFirstEditId + index);
         SendMessageW(edits[static_cast<std::size_t>(index)], EM_SETLIMITTEXT, 32, 0);
-        create_control(L"STATIC", spec.unit, label_style, x + 404, y + 7, 42, 20, 0);
-        errors[static_cast<std::size_t>(index)] = create_control(L"STATIC", L"", label_style, x + 130, y + 36, 290, 18,
+        units[static_cast<std::size_t>(index)] = create_control(L"STATIC", spec.unit, label_style, 0, 0, 0, 0, 0);
+        errors[static_cast<std::size_t>(index)] = create_control(L"STATIC", L"", label_style, 0, 0, 0, 0,
                                                                   kFirstErrorId + index);
         if(errors[static_cast<std::size_t>(index)] != nullptr) {
             set_font(errors[static_cast<std::size_t>(index)], small_font);
@@ -328,32 +369,92 @@ struct SettingsWindow::Impl {
         background_brush = CreateSolidBrush(kBackground);
         edit_brush = CreateSolidBrush(kEdit);
 
-        path_label = create_control(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 24, 694, 500, 22, kPathId);
+        path_label = create_control(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, kPathId);
         set_font(path_label, small_font);
-        status = create_control(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 24, 666, 530, 25, kStatusId);
+        status = create_control(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, kStatusId);
         set_font(status, small_font);
 
-        for(int index = 0; index < 4; ++index) {
-            create_field(index, 35, 105 + index * 58);
-        }
-        create_field(4, 35, 475);
-        create_field(5, 35, 533);
-        for(int index = 6; index < kFieldCount; ++index) {
-            create_field(index, 480, 475 + (index - 6) * 58);
+        for(int index = 0; index < kFieldCount; ++index) {
+            create_field(index);
         }
 
-        HWND restore = create_control(L"BUTTON", L"恢復預設值", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                      560, 685, 105, 32, kRestoreButtonId);
-        HWND cancel = create_control(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                     675, 685, 75, 32, kCancelButtonId);
+        restore_button = create_control(L"BUTTON", L"恢復預設值", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                        0, 0, 0, 0, kRestoreButtonId);
+        cancel_button = create_control(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                       0, 0, 0, 0, kCancelButtonId);
         apply_button = create_control(L"BUTTON", L"套用並儲存", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-                                      760, 685, 120, 32, kApplyButtonId);
-        set_font(restore, font);
-        set_font(cancel, font);
+                                      0, 0, 0, 0, kApplyButtonId);
+        set_font(restore_button, font);
+        set_font(cancel_button, font);
         set_font(apply_button, font);
+        layout_controls();
         load_config_to_controls(applied_config);
         const std::wstring path_text = std::wstring(L"設定檔：") + config_path.wstring();
         set_window_text(path_label, path_text);
+    }
+
+    static RECT to_rect(const SettingsRect& rect) {
+        return { rect.left, rect.top, rect.right, rect.bottom };
+    }
+
+    static void move_control(const HWND control, const int x, const int y, const int width, const int height) {
+        if(control != nullptr) {
+            SetWindowPos(control, nullptr, x, y, std::max(0, width), std::max(0, height),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    void layout_field(const int index, const SettingsRect& group, const int y, const int row_height) {
+        const int inner_left = group.left + 15;
+        const int inner_right = group.right - 15;
+        const int available = std::max(240, inner_right - inner_left);
+        const int label_width = std::min(140, std::max(112, available / 3));
+        const int unit_width = 32;
+        const int edit_width = 62;
+        const int slider_left = inner_left + label_width + 7;
+        const int edit_left = inner_right - unit_width - 5 - edit_width;
+        const int slider_width = std::max(90, edit_left - slider_left - 7);
+        const int error_width = std::max(90, inner_right - slider_left);
+
+        move_control(labels[static_cast<std::size_t>(index)], inner_left, y, label_width, 38);
+        move_control(sliders[static_cast<std::size_t>(index)], slider_left, y + 1, slider_width, 30);
+        move_control(edits[static_cast<std::size_t>(index)], edit_left, y, edit_width, 25);
+        move_control(units[static_cast<std::size_t>(index)], inner_right - unit_width, y + 5, unit_width, 20);
+        move_control(errors[static_cast<std::size_t>(index)], slider_left, y + 35, error_width, std::max(18, row_height - 37));
+    }
+
+    void layout_controls() {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        layout = calculate_settings_layout(client.right - client.left, client.bottom - client.top);
+
+        const int touch_row_height = std::max(58, (layout.touch_group.bottom - layout.touch_group.top - 62) / 4);
+        const int depth_row_height = std::max(58, (layout.depth_group.bottom - layout.depth_group.top - 62) / 2);
+        const int keypad_row_height = std::max(58, (layout.keypad_group.bottom - layout.keypad_group.top - 62) / 4);
+
+        for(int index = 0; index < 4; ++index) {
+            layout_field(index, layout.touch_group, layout.touch_group.top + 53 + index * touch_row_height, touch_row_height);
+        }
+        layout_field(4, layout.depth_group, layout.depth_group.top + 53, depth_row_height);
+        layout_field(5, layout.depth_group, layout.depth_group.top + 53 + depth_row_height, depth_row_height);
+        for(int index = 6; index < kFieldCount; ++index) {
+            layout_field(index, layout.keypad_group, layout.keypad_group.top + 53 + (index - 6) * keypad_row_height,
+                         keypad_row_height);
+        }
+
+        const int button_gap = 10;
+        const int apply_width = 120;
+        const int cancel_width = 75;
+        const int restore_width = 105;
+        const int apply_left = layout.preview_group.right - 20 - apply_width;
+        const int cancel_left = apply_left - button_gap - cancel_width;
+        const int restore_left = cancel_left - button_gap - restore_width;
+        move_control(restore_button, restore_left, layout.buttons_y, restore_width, 32);
+        move_control(cancel_button, cancel_left, layout.buttons_y, cancel_width, 32);
+        move_control(apply_button, apply_left, layout.buttons_y, apply_width, 32);
+        move_control(status, 24, layout.status_y, std::max(200, restore_left - 39), 22);
+        move_control(path_label, 24, layout.path_y, std::max(200, restore_left - 39), 18);
+        InvalidateRect(hwnd, nullptr, FALSE);
     }
 
     void set_field_error(const int index, const std::wstring& error) {
@@ -364,7 +465,7 @@ struct SettingsWindow::Impl {
 
     void set_status(const std::wstring& message, const COLORREF color) {
         set_window_text(status, message);
-        InvalidateRect(status, nullptr, TRUE);
+        InvalidateRect(status, nullptr, FALSE);
         status_color = color;
     }
 
@@ -463,7 +564,7 @@ struct SettingsWindow::Impl {
         else {
             set_status(L"尚未修改", kMuted);
         }
-        InvalidateRect(hwnd, nullptr, FALSE);
+        InvalidateRect(status, nullptr, FALSE);
     }
 
     void sync_slider_from_edit(const int index) {
@@ -533,14 +634,22 @@ struct SettingsWindow::Impl {
     }
 
     void draw_preview(HDC dc) {
-        const RECT preview_rect{ 480, 105, 865, 405 };
+        const RECT preview_rect = to_rect(layout.preview_rect);
         HBRUSH brush = CreateSolidBrush(RGB(8, 21, 24));
         FillRect(dc, &preview_rect, brush);
         DeleteObject(brush);
 
+        const int preview_width = static_cast<int>(preview_rect.right - preview_rect.left);
+        const int preview_height = static_cast<int>(preview_rect.bottom - preview_rect.top);
+        const int plane_left = preview_rect.left + std::max(25, preview_width / 8);
+        const int plane_right = preview_rect.right - std::max(25, preview_width / 8);
+        const int plane_top = preview_rect.top + std::max(25, preview_height / 7);
+        const int plane_bottom = preview_rect.bottom - std::max(65, preview_height / 4);
+        const int center_x = (plane_left + plane_right) / 2;
         HPEN plane_pen = CreatePen(PS_SOLID, 1, RGB(75, 143, 139));
         HGDIOBJ old_pen = SelectObject(dc, plane_pen);
-        POINT plane[4]{ { 525, 205 }, { 820, 170 }, { 820, 290 }, { 525, 325 } };
+        POINT plane[4]{ { plane_left, plane_top + 25 }, { plane_right, plane_top },
+                        { plane_right, plane_bottom - 15 }, { plane_left, plane_bottom + 15 } };
         Polygon(dc, plane, 4);
         SelectObject(dc, old_pen);
         DeleteObject(plane_pen);
@@ -551,21 +660,23 @@ struct SettingsWindow::Impl {
                                      : zone == PreviewZone::Release ? kCyan
                                      : zone == PreviewZone::Hold ? kAmber
                                                                   : kMuted;
-        int finger_y = 150;
+        int finger_y = preview_rect.top + 18;
         if(preview.distance_mm.has_value()) {
             const double normalized = std::clamp(static_cast<double>(*preview.distance_mm) / 80.0, 0.0, 1.0);
-            finger_y = 160 + static_cast<int>(normalized * 105.0);
+            const int available_finger_travel = static_cast<int>(plane_bottom - preview_rect.top - 50);
+            finger_y = static_cast<int>(preview_rect.top) + 25
+                       + static_cast<int>(normalized * std::max(40, available_finger_travel));
         }
         HBRUSH finger_brush = CreateSolidBrush(zone_color);
         HGDIOBJ old_brush = SelectObject(dc, finger_brush);
-        Ellipse(dc, 665, finger_y, 681, finger_y + 16);
+        Ellipse(dc, center_x - 8, finger_y, center_x + 8, finger_y + 16);
         SelectObject(dc, old_brush);
         DeleteObject(finger_brush);
 
         HPEN distance_pen = CreatePen(PS_DASH, 1, kAmber);
         old_pen = SelectObject(dc, distance_pen);
-        MoveToEx(dc, 673, finger_y + 16, nullptr);
-        LineTo(dc, 673, 255);
+        MoveToEx(dc, center_x, finger_y + 16, nullptr);
+        LineTo(dc, center_x, plane_bottom);
         SelectObject(dc, old_pen);
         DeleteObject(distance_pen);
 
@@ -573,7 +684,7 @@ struct SettingsWindow::Impl {
         SetTextColor(dc, kMuted);
         SelectObject(dc, small_font);
         const wchar_t* plane_label = L"虛擬鍵盤平面";
-        TextOutW(dc, 540, 300, plane_label, static_cast<int>(wcslen(plane_label)));
+        TextOutW(dc, plane_left + 15, plane_bottom + 20, plane_label, static_cast<int>(wcslen(plane_label)));
 
         std::wostringstream distance_text;
         if(preview.distance_mm.has_value()) {
@@ -585,49 +696,68 @@ struct SettingsWindow::Impl {
         SetTextColor(dc, zone_color);
         SelectObject(dc, font);
         const std::wstring distance = distance_text.str();
-        TextOutW(dc, 690, 212, distance.c_str(), static_cast<int>(distance.size()));
+        TextOutW(dc, preview_rect.left + 20, preview_rect.top + 18, distance.c_str(), static_cast<int>(distance.size()));
 
         SetTextColor(dc, kText);
         SelectObject(dc, small_font);
         const std::wstring tracking = preview.tracking_detected ? L"追蹤：已偵測" : L"追蹤：未偵測";
         const std::wstring key = std::wstring(L"按鍵：")
                                  + (preview.key.has_value() ? utf8_to_wide(*preview.key) : L"-");
-        TextOutW(dc, 500, 350, tracking.c_str(), static_cast<int>(tracking.size()));
-        TextOutW(dc, 620, 350, key.c_str(), static_cast<int>(key.size()));
+        TextOutW(dc, preview_rect.left + 20, preview_rect.bottom - 55, tracking.c_str(), static_cast<int>(tracking.size()));
+        TextOutW(dc, preview_rect.left + 140, preview_rect.bottom - 55, key.c_str(), static_cast<int>(key.size()));
 
         const std::wstring touch = preview.armed ? L"觸控：可觸發" : L"觸控：等待手指離開";
         SetTextColor(dc, preview.armed ? kCyan : kAmber);
-        TextOutW(dc, 500, 375, touch.c_str(), static_cast<int>(touch.size()));
+        TextOutW(dc, preview_rect.left + 20, preview_rect.bottom - 30, touch.c_str(), static_cast<int>(touch.size()));
         SetTextColor(dc, kMuted);
         const std::wstring hint = std::wstring(L"觸控 ")
                                   + format_value(applied_config.touch.touch_threshold_mm, false)
                                   + L" mm   /   離開 " + format_value(applied_config.touch.release_threshold_mm, false) + L" mm";
-        TextOutW(dc, 650, 375, hint.c_str(), static_cast<int>(hint.size()));
+        TextOutW(dc, preview_rect.left + 170, preview_rect.bottom - 30, hint.c_str(), static_cast<int>(hint.size()));
     }
 
     void paint() {
         PAINTSTRUCT paint_struct{};
         const HDC dc = BeginPaint(hwnd, &paint_struct);
-        FillRect(dc, &paint_struct.rcPaint, background_brush);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, kCyan);
-        SelectObject(dc, small_font);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const HDC buffer = CreateCompatibleDC(dc);
+        const HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
+        HGDIOBJ old_bitmap = nullptr;
+        if(buffer != nullptr && bitmap != nullptr) {
+            old_bitmap = SelectObject(buffer, bitmap);
+        }
+        const HDC canvas = old_bitmap != nullptr ? buffer : dc;
+        FillRect(canvas, &client, background_brush);
+        SetBkMode(canvas, TRANSPARENT);
+        SetTextColor(canvas, kCyan);
+        SelectObject(canvas, small_font);
         const wchar_t* eyebrow = L"AERIAL TOUCH / TUNING CONSOLE";
-        TextOutW(dc, 24, 18, eyebrow, static_cast<int>(wcslen(eyebrow)));
-        SetTextColor(dc, kText);
-        SelectObject(dc, heading_font);
+        TextOutW(canvas, 24, 18, eyebrow, static_cast<int>(wcslen(eyebrow)));
+        SetTextColor(canvas, kText);
+        SelectObject(canvas, heading_font);
         const wchar_t* title = L"參數設定";
-        TextOutW(dc, 24, 38, title, static_cast<int>(wcslen(title)));
-        SetTextColor(dc, kMuted);
-        SelectObject(dc, small_font);
+        TextOutW(canvas, 24, 38, title, static_cast<int>(wcslen(title)));
+        SetTextColor(canvas, kMuted);
+        SelectObject(canvas, small_font);
         const wchar_t* description = L"調整感測、觸控與鍵盤幾何；按下套用後於目前執行中生效。";
-        TextOutW(dc, 155, 44, description, static_cast<int>(wcslen(description)));
+        TextOutW(canvas, 155, 44, description, static_cast<int>(wcslen(description)));
 
-        draw_group(dc, { 20, 75, 450, 440 }, L"觸控判定", L"TOUCH LOGIC");
-        draw_group(dc, { 20, 450, 450, 650 }, L"深度與校正", L"DEPTH / CALIBRATION");
-        draw_group(dc, { 465, 75, 880, 430 }, L"觸控距離預覽", L"LIVE MODEL");
-        draw_group(dc, { 465, 450, 880, 650 }, L"鍵盤幾何", L"KEYPAD GEOMETRY");
-        draw_preview(dc);
+        draw_group(canvas, to_rect(layout.touch_group), L"觸控判定", L"TOUCH LOGIC");
+        draw_group(canvas, to_rect(layout.depth_group), L"深度與校正", L"DEPTH / CALIBRATION");
+        draw_group(canvas, to_rect(layout.preview_group), L"觸控距離預覽", L"LIVE MODEL");
+        draw_group(canvas, to_rect(layout.keypad_group), L"鍵盤幾何", L"KEYPAD GEOMETRY");
+        draw_preview(canvas);
+        if(old_bitmap != nullptr) {
+            BitBlt(dc, 0, 0, client.right, client.bottom, canvas, 0, 0, SRCCOPY);
+            SelectObject(buffer, old_bitmap);
+        }
+        if(bitmap != nullptr) {
+            DeleteObject(bitmap);
+        }
+        if(buffer != nullptr) {
+            DeleteDC(buffer);
+        }
         EndPaint(hwnd, &paint_struct);
     }
 
@@ -650,6 +780,20 @@ struct SettingsWindow::Impl {
         case WM_CLOSE:
             self->handle_cancel();
             return 0;
+        case WM_SIZE:
+            if(w_param != SIZE_MINIMIZED) {
+                self->layout_controls();
+            }
+            return 0;
+        case WM_GETMINMAXINFO: {
+            auto* limits = reinterpret_cast<MINMAXINFO*>(l_param);
+            RECT minimum_rect{ 0, 0, 900, 780 };
+            const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
+            AdjustWindowRectEx(&minimum_rect, style, FALSE, WS_EX_TOOLWINDOW);
+            limits->ptMinTrackSize.x = minimum_rect.right - minimum_rect.left;
+            limits->ptMinTrackSize.y = minimum_rect.bottom - minimum_rect.top;
+            return 0;
+        }
         case WM_PAINT:
             self->paint();
             return 0;
@@ -725,19 +869,21 @@ struct SettingsWindow::Impl {
         if(register_class(instance) == 0) {
             return false;
         }
-        hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"AerialTouchSettingsWindow", L"Aerial Touch · 參數設定",
-                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 920, 780, nullptr, nullptr, instance, this);
+        const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
+        RECT window_rect{ 0, 0, 920, 780 };
+        AdjustWindowRectEx(&window_rect, style, FALSE, WS_EX_TOOLWINDOW);
+        const int window_width = window_rect.right - window_rect.left;
+        const int window_height = window_rect.bottom - window_rect.top;
+        hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"AerialTouchSettingsWindow", L"Aerial Touch · 參數設定", style,
+                              CW_USEDEFAULT, CW_USEDEFAULT, window_width, window_height, nullptr, nullptr, instance, this);
         if(hwnd == nullptr) {
             return false;
         }
         RECT work_area{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0);
-        const int width = 920;
-        const int height = 780;
-        const int x = work_area.left + (work_area.right - work_area.left - width) / 2;
-        const int y = work_area.top + (work_area.bottom - work_area.top - height) / 2;
-        SetWindowPos(hwnd, HWND_TOP, x, y, width, height, SWP_NOACTIVATE);
+        const int x = work_area.left + (work_area.right - work_area.left - window_width) / 2;
+        const int y = work_area.top + (work_area.bottom - work_area.top - window_height) / 2;
+        SetWindowPos(hwnd, HWND_TOP, x, y, window_width, window_height, SWP_NOACTIVATE);
         return true;
     }
 };
@@ -836,9 +982,14 @@ void SettingsWindow::process_messages() {
 void SettingsWindow::update_preview(SettingsPreview preview) {
 #ifdef _WIN32
     if(impl_ != nullptr) {
+        if(impl_->preview.distance_mm == preview.distance_mm && impl_->preview.tracking_detected == preview.tracking_detected
+           && impl_->preview.key == preview.key && impl_->preview.armed == preview.armed) {
+            return;
+        }
         impl_->preview = std::move(preview);
         if(impl_->hwnd != nullptr) {
-            InvalidateRect(impl_->hwnd, nullptr, FALSE);
+            const RECT preview_rect = Impl::to_rect(impl_->layout.preview_rect);
+            InvalidateRect(impl_->hwnd, &preview_rect, FALSE);
         }
     }
 #else
@@ -850,24 +1001,7 @@ void SettingsWindow::update_preview(SettingsPreview preview) {
 
 #else
 
-#include <cmath>
-
 namespace aerial_touch {
-
-PreviewZone classify_preview_zone(const std::optional<float> distance_mm,
-                                  const float touch_threshold_mm,
-                                  const float release_threshold_mm) {
-    if(!distance_mm.has_value() || !std::isfinite(*distance_mm)) {
-        return PreviewZone::Unknown;
-    }
-    if(*distance_mm <= touch_threshold_mm) {
-        return PreviewZone::Touch;
-    }
-    if(*distance_mm >= release_threshold_mm) {
-        return PreviewZone::Release;
-    }
-    return PreviewZone::Hold;
-}
 
 SettingsWindow::SettingsWindow() = default;
 SettingsWindow::~SettingsWindow() = default;

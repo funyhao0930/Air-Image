@@ -3,6 +3,7 @@
 #include "aerial_touch/keypad.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/plane.hpp"
+#include "aerial_touch/keypad_overlay.hpp"
 #include "aerial_touch/rgbd_frame.hpp"
 #include "aerial_touch/settings_window.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
@@ -84,6 +85,23 @@ bool touch_uses_elapsed_time_for_approach_velocity() {
     touch.update({ 100, 21.0F, "5" });
     const auto press = touch.update({ 200, 10.0F, "5" });
     return press.has_value() && press->key == "5";
+}
+
+bool keypad_overlay_prioritizes_pressed_key() {
+    const std::optional<std::string> hovered_key{ "5" };
+    const std::optional<std::string> pressed_key{ "5" };
+    using aerial_touch::KeypadKeyVisualState;
+    return aerial_touch::keypad_key_visual_state("5", hovered_key, pressed_key) == KeypadKeyVisualState::Pressed
+           && aerial_touch::keypad_key_visual_state("5", hovered_key, std::nullopt) == KeypadKeyVisualState::Hover
+           && aerial_touch::keypad_key_visual_state("4", hovered_key, pressed_key) == KeypadKeyVisualState::Idle;
+}
+
+bool keypad_overlay_clears_pressed_key_when_not_currently_held() {
+    const std::optional<std::string> last_pressed_key{ "5" };
+    return aerial_touch::currently_pressed_key(last_pressed_key, false, true, false) == last_pressed_key
+           && !aerial_touch::currently_pressed_key(last_pressed_key, true, true, false).has_value()
+           && !aerial_touch::currently_pressed_key(last_pressed_key, false, false, false).has_value()
+           && !aerial_touch::currently_pressed_key(last_pressed_key, false, true, true).has_value();
 }
 
 bool touch_config_update_preserves_armed_state() {
@@ -214,6 +232,16 @@ bool preview_classifies_touch_zones() {
            && aerial_touch::classify_preview_zone(20.0F, 10.0F, 20.0F) == PreviewZone::Release;
 }
 
+bool settings_layout_adapts_to_window_size() {
+    const auto compact = aerial_touch::calculate_settings_layout(920, 780);
+    const auto expanded = aerial_touch::calculate_settings_layout(1200, 960);
+    return expanded.preview_group.right > compact.preview_group.right
+           && expanded.preview_group.bottom > compact.preview_group.bottom
+           && expanded.preview_rect.right > compact.preview_rect.right
+           && expanded.buttons_y > compact.buttons_y
+           && expanded.touch_group.right > compact.touch_group.right;
+}
+
 bool rgbd_frame_validates_alignment_and_buffer_sizes() {
     aerial_touch::RgbdFrame frame;
     frame.color_width = 2;
@@ -240,7 +268,8 @@ bool unavailable_hardware_d2c_uses_software_alignment() {
 bool run_interaction_core_tests() {
     return plane_projection_uses_camera_facing_normal() && plane_uses_configured_minimum_point_distance()
            && plane_rejects_nearly_collinear_points()
-           && keypad_maps_uv_to_expected_number()
+           && keypad_maps_uv_to_expected_number() && keypad_overlay_prioritizes_pressed_key()
+           && keypad_overlay_clears_pressed_key_when_not_currently_held()
            && touch_requires_release_before_repeat_press() && touch_does_not_press_outside_keypad()
            && touch_uses_elapsed_time_for_approach_velocity()
            && touch_config_update_preserves_armed_state()
@@ -248,7 +277,7 @@ bool run_interaction_core_tests() {
            && press_event_keeps_fingertip_and_plane_coordinates() && missing_hand_tracker_dll_is_safe()
            && yaml_config_loads_all_runtime_thresholds() && yaml_config_round_trips_through_save()
            && yaml_config_rejects_nonfinite_values() && app_config_validation_rejects_invalid_values()
-           && preview_classifies_touch_zones()
+           && preview_classifies_touch_zones() && settings_layout_adapts_to_window_size()
            && rgbd_frame_validates_alignment_and_buffer_sizes()
            && unavailable_hardware_d2c_uses_software_alignment();
 }
