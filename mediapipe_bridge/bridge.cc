@@ -41,7 +41,7 @@ void clear_error(char* destination, const int capacity) {
 extern "C" MPHB_API void* mphb_create(const char* model_path, char* error_message, const int error_capacity) {
     clear_error(error_message, error_capacity);
     if(model_path == nullptr || model_path[0] == '\0') {
-        write_error("Model path is empty", error_message, error_capacity);
+        write_error("模型路徑不可為空", error_message, error_capacity);
         return nullptr;
     }
     try {
@@ -62,7 +62,7 @@ extern "C" MPHB_API void* mphb_create(const char* model_path, char* error_messag
         return nullptr;
     }
     catch(...) {
-        write_error("Unknown exception while creating Hand Landmarker", error_message, error_capacity);
+        write_error("建立手部追蹤器時發生未知例外", error_message, error_capacity);
         return nullptr;
     }
 }
@@ -81,7 +81,7 @@ extern "C" MPHB_API int mphb_detect_rgb(void* handle,
         *result = {};
     }
     if(handle == nullptr || rgb == nullptr || result == nullptr || width <= 0 || height <= 0 || stride_bytes < width * 3) {
-        write_error("Invalid detect_rgb argument", error_message, error_capacity);
+        write_error("detect_rgb 參數無效", error_message, error_capacity);
         return 0;
     }
     try {
@@ -112,7 +112,7 @@ extern "C" MPHB_API int mphb_detect_rgb(void* handle,
         return 0;
     }
     catch(...) {
-        write_error("Unknown exception during Hand Landmarker detection", error_message, error_capacity);
+        write_error("手部追蹤偵測期間發生未知例外", error_message, error_capacity);
         return 0;
     }
 }

@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 include(CTest)
 
 find_package(yaml-cpp CONFIG REQUIRED)
@@ -36,8 +40,14 @@ add_library(aerial_touch_runtime STATIC
 target_include_directories(aerial_touch_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(aerial_touch_runtime PUBLIC aerial_touch_core ob::OrbbecSDK ${OpenCV_LIBS})
 
-add_executable(aerial_touch_app src/main.cpp)
+add_executable(aerial_touch_app
+    src/main.cpp
+    src/utf8_text.cpp
+)
 target_link_libraries(aerial_touch_app PRIVATE aerial_touch_runtime)
+if(WIN32)
+    target_link_libraries(aerial_touch_app PRIVATE gdi32 user32)
+endif()
 
 add_executable(orbbec_stream_probe tools/orbbec_stream_probe.cpp)
 target_link_libraries(orbbec_stream_probe PRIVATE ob::OrbbecSDK)
@@ -80,6 +90,23 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/hand_landmarker.task")
 endif()
 
 if(BUILD_TESTING)
+    add_test(NAME aerial_touch_localization
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_localization.cmake)
+    add_test(NAME aerial_touch_build_script
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_build_script.cmake)
+    add_test(NAME aerial_touch_release_build
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_build.cmake)
+    add_test(NAME aerial_touch_orbbec_probe_config
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_orbbec_probe_config.cmake)
+
     add_executable(aerial_touch_tests
         tests/test_depth_sampler.cpp
         tests/test_interaction_core.cpp

@@ -11,6 +11,7 @@ cc_binary(
         "hand_bridge_api.h",
     ],
     defines = ["MEDIAPIPE_HAND_BRIDGE_EXPORTS"],
+    copts = ["/utf-8"],
     linkshared = True,
     deps = [
         "//mediapipe/framework/formats:image",

@@ -32,7 +32,7 @@ HandTracker::HandTracker(const std::filesystem::path& dll_path, const std::files
 #if defined(_WIN32)
     impl_->module = LoadLibraryW(dll_path.c_str());
     if(impl_->module == nullptr) {
-        impl_->error = "MediaPipe hand bridge DLL could not be loaded: " + dll_path.string();
+        impl_->error = std::string(u8"無法載入 MediaPipe 手部追蹤橋接 DLL：") + dll_path.string();
         return;
     }
 
@@ -40,7 +40,7 @@ HandTracker::HandTracker(const std::filesystem::path& dll_path, const std::files
     impl_->detect  = reinterpret_cast<Impl::DetectFn>(GetProcAddress(impl_->module, "mphb_detect_rgb"));
     impl_->destroy = reinterpret_cast<Impl::DestroyFn>(GetProcAddress(impl_->module, "mphb_destroy"));
     if(impl_->create == nullptr || impl_->detect == nullptr || impl_->destroy == nullptr) {
-        impl_->error = "MediaPipe hand bridge DLL is missing required exports";
+        impl_->error = u8"MediaPipe 手部追蹤橋接 DLL 缺少必要的匯出函式";
         FreeLibrary(impl_->module);
         impl_->module = nullptr;
         return;
@@ -52,13 +52,13 @@ HandTracker::HandTracker(const std::filesystem::path& dll_path, const std::files
     if(impl_->handle == nullptr) {
         impl_->error = error_buffer.data();
         if(impl_->error.empty()) {
-            impl_->error = "MediaPipe hand bridge could not create a tracker";
+            impl_->error = u8"MediaPipe 手部追蹤橋接程式無法建立追蹤器";
         }
     }
 #else
     (void)dll_path;
     (void)model_path;
-    impl_->error = "MediaPipe hand bridge dynamic loading is only implemented on Windows";
+    impl_->error = u8"MediaPipe 手部追蹤橋接程式目前僅支援 Windows 動態載入";
 #endif
 }
 

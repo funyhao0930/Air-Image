@@ -1,143 +1,230 @@
 # Gemini 2 空中虛擬鍵盤操作指南
 
-本指南面向第一次使用 App 的使用者，說明如何從啟動程式開始，完成校正並操作空中虛擬數字鍵盤。
+本指南適合第一次使用本 MVP 原型的使用者，說明如何從啟動程式開始，完成三點校正並操作空中數字鍵盤。
 
-> 目前版本是 MVP 原型。按鍵事件只會顯示在 App 視窗與終端機輸出，不會替 Windows 或其他程式實際輸入數字。
+> 目前按鍵事件只會顯示在 OpenCV 視窗與 PowerShell 終端機，不會替 Windows 或其他程式實際輸入數字。
 
 ## 一、啟動前準備
 
 請先確認：
 
-1. Orbbec Gemini 2 已透過 USB 連接到電腦。
-2. 相機前方有足夠空間，讓手指可以在鏡頭前伸出並移動。
-3. App 的輸出資料夾包含完整 runtime，而不只是 `aerial_touch_app.exe`。至少要保留 `extensions/`、Orbbec SDK DLL、MediaPipe bridge DLL、手部模型及 `config/default.yaml`。
+1. 電腦是 Windows 11，且已連接 Orbbec Gemini 2。
+2. 相機前方有足夠空間讓食指伸出、移動與靠近平面。
+3. 建置輸出目錄保留完整 runtime，不要只複製 `aerial_touch_app.exe`。
+4. 沒有其他程式正在獨占 Gemini 2 的影像串流。
 
-如果尚未建置 App，請先參考 README 的建置說明。建置完成後，執行輸出目錄通常是 `build/windows-debug`。
+`build/windows-release` 至少應包含下列項目：
 
-## 二、啟動 App
+```text
+aerial_touch_app.exe
+OrbbecSDK.dll
+OrbbecSDKConfig.xml
+extensions/frameprocessor/ob_frame_processor.dll
+extensions/                 （整個目錄）
+mediapipe_hand_bridge.dll
+assets/models/hand_landmarker.task
+config/default.yaml
+```
 
-在 Visual Studio Developer PowerShell 或一般 PowerShell 中執行：
+其中 `extensions/frameprocessor/ob_frame_processor.dll` 是 Gemini 2 深度串流所需的 runtime。缺少它時，可能仍看得到部分相機資訊，但無法正常取得深度資料。
+
+如果尚未建置，請在專案根目錄的 Visual Studio Developer PowerShell 執行：
 
 ```powershell
-Set-Location build/windows-debug
+cmake --preset windows-release
+cmake --build --preset windows-release
+ctest --preset windows-release --output-on-failure
+```
+
+若尚未準備 MediaPipe bridge，先取得固定版本原始碼、下載模型，再建置 bridge：
+
+```powershell
+git clone --depth 1 --branch v0.10.35 https://github.com/google-ai-edge/mediapipe.git third_party/mediapipe
+.\scripts\fetch_hand_model.ps1
+.\scripts\build_mediapipe_bridge.ps1 -MediaPipeSource .\third_party\mediapipe
+```
+
+完成後確認 `build/windows-release/mediapipe_hand_bridge.dll` 存在，再啟動主程式。
+
+## 二、啟動程式
+
+在 PowerShell 執行：
+
+```powershell
+Set-Location build/windows-release
 .\aerial_touch_app.exe
 ```
 
-請從 `build/windows-debug` 啟動，因為 App 預設會用相對路徑尋找設定檔、模型與 DLL。
+必須從 `build/windows-release` 啟動，因為程式預設會用相對路徑尋找設定檔、MediaPipe bridge 與手部模型。
 
-啟動後會出現名為 `Gemini 2 Aerial Keypad` 的 OpenCV 視窗。畫面會顯示相機影像、手部骨架、右下角的數字鍵盤，以及目前追蹤與校正狀態。
+成功啟動後會出現 `Gemini 2 空中鍵盤` 視窗，畫面包含：
 
-如果啟動失敗，先確認相機已連接、輸出資料夾完整，並從終端機查看錯誤訊息。
+- Gemini 2 的 RGB 影像。
+- 手部骨架；食指指尖會以較大的紅色標記顯示。
+- 視窗右下角的 1–9、0 數字鍵盤。
+- FPS、追蹤、指尖座標、校正、觸控與最近事件等資訊。
 
-## 三、先認識畫面資訊
+若要從專案根目錄啟動，可使用輸出目錄的明確相對路徑：
 
-| 顯示項目 | 意義 |
+```powershell
+.\build\windows-release\aerial_touch_app.exe `
+  --config .\build\windows-release\config\default.yaml `
+  --bridge .\build\windows-release\mediapipe_hand_bridge.dll `
+  --model .\build\windows-release\assets\models\hand_landmarker.task
+```
+
+## 三、先確認畫面狀態
+
+| 畫面項目 | 意義 |
 | --- | --- |
 | `FPS` | 目前影像更新速度。 |
-| `Tracker: hand` | 已偵測到手部。`no hand` 表示目前沒有偵測到手。 |
-| `Tracker: unavailable` | MediaPipe bridge 或手部模型無法載入，不能進行手部操作。 |
-| `XYZ` | 指尖在相機座標中的三維位置。 |
-| `Plane UV` | 指尖投影到校正平面後的位置。 |
-| `Distance` | 指尖與虛擬平面的距離，單位是 mm。 |
-| `Key` | 指尖目前位於哪個數字鍵；不在鍵內時通常顯示 `-`。 |
-| `Touch: ARMED` | 已準備好接受下一次觸控。 |
-| `Touch: WAIT RELEASE` | 仍視為手指停留在按鍵附近，需先離開後才會重新準備。 |
-| `Calibration` | 校正狀態。`NOT SET` 表示尚未完成，`READY` 表示可以操作。 |
-| `Last event` | 最近一次觸控事件的按鍵。 |
-
-指尖會以較大的紅色標記顯示；其他手部關節則以骨架線與小圓點顯示。
+| `對齊` | 顯示硬體 D2C 或軟體 D2C；兩者都是 RGB 與深度的對齊方式。 |
+| `追蹤：偵測到手部` | MediaPipe 已偵測到手部。 |
+| `追蹤：未偵測到手部` | 目前沒有可靠的手部追蹤結果。 |
+| `追蹤：無法使用` | MediaPipe bridge 或手部模型未成功載入。 |
+| `指尖像素` | 指尖在影像中的像素位置。 |
+| `XYZ` | 指尖在相機座標中的三維位置，單位是 mm。 |
+| `平面 UV` | 指尖投影到校正平面後的位置，單位是 mm。 |
+| `距離` | 指尖與虛擬平面的帶正負距離，單位是 mm。 |
+| `按鍵` | 指尖目前落在哪個數字鍵；不在鍵內時顯示 `-`。 |
+| `觸控：可觸發` | 已準備好接受下一次觸控。 |
+| `觸控：等待手指離開` | 仍視為手指停留在按鍵附近，需先離開才能再次觸發。 |
+| `校正：尚未設定` | 尚未完成三點校正。 |
+| `校正：進行中` | 正在擷取校正點。 |
+| `校正：完成` | 已建立虛擬鍵盤平面，可以操作。 |
+| `最近按鍵` | 最近一次產生的按鍵事件。 |
 
 ## 四、完成三點校正
 
-校正是必要步驟，用來告訴 App 虛擬鍵盤所在的平面方向與位置。每次重新啟動 App，或相機、鍵盤位置明顯改變時，都建議重新校正。
+校正用來設定虛擬鍵盤的起點、右方方向與下方方向。每次重新啟動程式，或相機／操作平面位置改變後，都應重新校正。
 
 ### 1. 開始校正
 
-將手伸到預定操作平面附近，確認畫面可看到手部骨架後，按下鍵盤上的 `C`。畫面會提示 `Point at keypad start (top-left of 1); press Space`。
+1. 將手放在預定的空中操作平面附近。
+2. 確認畫面能看到手部骨架與紅色食指指尖標記。
+3. 按鍵盤上的 `C`。
 
-這裡的「鍵盤」是指你想在相機前方操作的**空中虛擬數字鍵盤範圍**，不是 OpenCV 視窗或電腦螢幕的左上、右上角。
+畫面會提示將手指移到 `1 鍵左上角`。這裡指的是空中虛擬鍵盤的幾何位置，不是 OpenCV 視窗或電腦螢幕的左上角。
 
-### 2. 指定鍵盤的起點、右方與下方
+### 2. 依序擷取三個位置
 
-面向相機，想像空中放著一個 3 × 4 的數字鍵盤。依序將食指指尖放到下列位置；每個位置保持短暫穩定後按 `Space`：
+面向相機，想像空中有一個 3 欄 × 4 列的數字鍵盤：
 
 ```text
-第 1 點：鍵盤起點（「1」鍵左上） ── 第 2 點：往右的方向（朝「3」鍵）
-          │
-          │
-第 3 點：往下的方向（朝「0」鍵）
+第 1 點：1 鍵左上角 ───── 第 2 點：往右，朝 3 鍵方向
+       |
+       |
+第 3 點：往下，朝 0 鍵方向
 ```
 
-1. **鍵盤起點：** 預定的「1」鍵左上角。這個點是整個虛擬鍵盤開始的位置。
-2. **右方參考點：** 從起點往右移到「3」鍵方向的某個位置。這個點告訴 App 鍵盤的右方在哪裡。
-3. **下方參考點：** 從起點往下移到「0」鍵方向的某個位置。這個點告訴 App 鍵盤的下方在哪裡。
+依下列順序操作；每一點都先讓食指穩定，再按一次 `Space`：
 
-第 2、3 點不必剛好落在鍵盤外框，但都必須距離起點至少約 8 公分，且「往右」與「往下」兩個方向不要接近同一直線。成功擷取後，畫面會顯示下一個要指定的位置；第三點完成後會提示 `press Enter to solve`。
+1. 將指尖放在預定的 `1` 鍵左上角，按 `Space`。
+2. 將指尖移到起點右方、朝 `3` 鍵方向的位置，按 `Space`。
+3. 將指尖移到起點下方、朝 `0` 鍵方向的位置，按 `Space`。
 
-### 3. 解算校正平面
+第 2、3 點不必精確落在鍵面中心，但應與第 1 點保持明顯距離；預設至少約 80 mm，且右方與下方兩個方向不可接近同一直線。第三點記錄後，狀態會提示按 `Enter` 完成校正。
 
-確認三點都已擷取後按 `Enter`。
+如果畫面顯示 `無法擷取：指尖深度資料無效`，先讓指尖保持在相機可取得深度的範圍內，穩定後再按一次 `Space`。未成功擷取時不會增加校正點數。
 
-- 成功時：顯示 `Calibration ready`，`Calibration` 會變成 `READY 3/3`，即可開始操作。
-- 失敗時：顯示 `Calibration rejected`。通常是三點太靠近，或「右方參考點」和「下方參考點」幾乎落在同一條方向上。請按 `R` 重設後，重新指定距離更大的三個位置。
+### 3. 解算平面
 
-校正時請避免快速移動手指，也不要讓手部在擷取瞬間離開畫面。如果深度資料無效，App 會顯示 `Cannot capture: fingertip depth is invalid`，請調整手指位置或距離後再按一次 `Space`。
+確認畫面顯示已記錄 3/3 後按 `Enter`：
 
-## 五、操作虛擬鍵盤
+- 成功時顯示 `校正完成`，校正狀態變成完成，即可操作。
+- 失敗時顯示 `校正失敗：三個位置距離太近或幾乎位於同一直線`。按 `R` 重設後，重新擷取距離更大的三個位置。
+
+## 五、操作虛擬數字鍵盤
 
 校正完成後：
 
-1. 將食指指尖移到右下角顯示的數字鍵上方。
-2. 從平面上方朝按鍵方向靠近，讓指尖穿過觸控門檻。
-3. 觀察終端機或畫面的 `Last event`，確認已產生按鍵事件。
-4. 要按下一個鍵時，先把指尖離開平面，再移向下一個鍵。
+1. 將食指移到視窗右下角對應的數字鍵上方。
+2. 確認畫面上的 `按鍵` 顯示目標數字。
+3. 從平面上方朝該鍵靠近，直到穿過觸控門檻。
+4. 在視窗的 `最近按鍵` 或 PowerShell 輸出中確認事件。
+5. 要觸發下一個鍵時，先把食指移離平面，再移向下一個鍵。
 
-每次靠近只會觸發一次。手指停留在同一個鍵上時，不會連續重複觸發；離開後才會重新準備下一次觸控。
+每次靠近只觸發一次。停留在同一個鍵上不會連續重複觸發；必須先離開，`觸控` 回到 `可觸發` 後，下一次靠近才會再次產生事件。
 
-成功觸發時，終端機會輸出類似：
+成功事件會在終端機輸出類似：
 
 ```text
-PRESS key=5 timestamp_ms=... xyz_mm=(...) uv_mm=(...)
+按鍵事件 按鍵=5 時間戳記毫秒=... 指尖XYZ毫米=(...) 平面UV毫米=(...)
 ```
 
-這個輸出只是事件紀錄，不會自動把 `5` 打進記事本、瀏覽器或其他 Windows 應用程式。
+這只是事件紀錄，不會把數字自動輸入記事本、瀏覽器或其他 Windows 程式。
 
-## 六、重新校正與離開 App
+## 六、操作按鍵總覽
 
 | 按鍵 | 功能 |
 | --- | --- |
-| `C` | 清除目前校正，開始指定新的鍵盤起點、右方與下方。 |
+| `C` | 清除目前校正，開始重新指定三個校正點。 |
+| `Space` | 在校正進行中擷取目前指尖位置。其他時機按下不會擷取校正點。 |
+| `Enter` | 在校正進行中，以三個已擷取點解算平面。 |
 | `R` | 重設校正與觸控狀態，回到等待 `C` 的狀態。 |
-| `Q` 或 `Esc` | 離開 App。 |
+| `Q` 或 `Esc` | 離開程式。 |
 
-結束前可先移開手指，再按 `Q` 或 `Esc`。App 會關閉相機串流與影像視窗。
+結束前建議先移開手指，再按 `Q` 或 `Esc`。程式會停止相機串流並關閉影像視窗。
 
 ## 七、常見問題
 
-### 畫面沒有出現，或 App 啟動後立即結束
+### 啟動後立即結束，或顯示相機啟動失敗
 
-請確認 Gemini 2 已連接且沒有被其他程式獨占；你是在 `build/windows-debug` 目錄執行；以及 `OrbbecSDK.dll`、`OrbbecSDKConfig.xml` 與 `extensions/frameprocessor/ob_frame_processor.dll` 都存在。
+確認 Gemini 2 已連接、沒有被其他程式使用，並從 `build/windows-release` 啟動。再確認下列檔案存在：
 
-### 顯示 `Tracker: unavailable`
+```text
+OrbbecSDK.dll
+OrbbecSDKConfig.xml
+extensions/frameprocessor/ob_frame_processor.dll
+```
 
-請確認 `mediapipe_hand_bridge.dll` 與 `assets/models/hand_landmarker.task` 存在，而且啟動時使用的路徑正確。若模型尚未下載，請依 README 的 MediaPipe bridge 建置步驟完成下載與建置。
+若要單獨確認 SDK 是否能存取相機，可在 `build/windows-release` 執行：
 
-### 顯示 `no hand`
+```powershell
+.\orbbec_stream_probe.exe
+```
 
-請把整隻手移到相機可見範圍內，並確認光線足夠。讓食指伸直，避免手指被其他物體遮住。
+它會列出偵測到的感測器與串流設定，並以主程式相同的硬體對齊設定測試 RGB-D 影像。若出現 `Device changed! removed`，先檢查 USB 線、接頭、Hub 與供電；相機傾斜或移動時不要拉扯 USB 線。
 
-### 指尖看得到，但無法擷取校正點
+### 顯示 `追蹤：無法使用`
 
-畫面可能偵測到手部影像，卻沒有取得有效深度。請讓指尖不要太靠近或太遠離相機，避開反光或純黑表面，穩定幾秒後再按 `Space`。
+確認下列檔案存在於啟動目錄，且檔案版本互相匹配：
 
-### 校正成功但按鍵沒有事件
+```text
+mediapipe_hand_bridge.dll
+opencv_core4.dll
+opencv_imgproc4.dll
+z.dll
+assets/models/hand_landmarker.task
+```
 
-確認 `Calibration` 顯示 `READY`，並依照「先靠近、再離開」的方式操作。若 `Touch` 顯示 `WAIT RELEASE`，請先把指尖移離虛擬平面，也要確認指尖位於右下角數字鍵盤顯示的按鍵範圍內。
+若模型不存在，執行 `scripts/fetch_hand_model.ps1`；若 bridge 不存在，依本指南第一節重新執行 MediaPipe bridge 建置命令。
+
+### 顯示 `追蹤：未偵測到手部`
+
+把整隻手移到相機畫面內，確保光線充足，並讓食指伸直、不要被其他物體遮住。只有偵測到完整且有效的手部 landmarks，程式才會顯示指尖資料。
+
+### 看得到指尖，但無法擷取校正點
+
+影像能看到手部不代表深度資料一定有效。請讓指尖不要太靠近或太遠離相機，避開強反光或極暗表面，保持穩定後再按 `Space`。
+
+### 校正失敗
+
+按 `R` 後重新校正。第 2 點應明確位於第 1 點右方，第 3 點應明確位於第 1 點下方；三點要分開足夠距離，且不可幾乎排成一直線。
+
+### 校正完成但沒有按鍵事件
+
+確認：
+
+1. `校正` 顯示完成。
+2. `按鍵` 顯示目標數字，而不是 `-`。
+3. 指尖是從平面上方靠近，而不是一開始就停在平面附近。
+4. 若 `觸控` 顯示 `等待手指離開`，先把指尖移遠，等它回到 `可觸發`。
 
 ## 八、目前版本限制
 
-- 目前只支援單手追蹤。
-- 目前只提供數字鍵盤與畫面／終端機事件輸出。
-- 不會注入 Windows 系統鍵盤事件。
+- 只支援單手追蹤。
+- 目前只有數字鍵盤。
+- 按鍵事件只輸出到視窗與終端機，不注入 Windows 系統鍵盤事件。
 - 不包含 ASKA3D、雙手操作或 GUI 設定面板。
-- 實機互動效果仍需依相機位置、光線、手部距離與平面配置進一步驗收。
+- 實機互動效果仍會受相機位置、USB 穩定性、光線、手部距離與校正品質影響。

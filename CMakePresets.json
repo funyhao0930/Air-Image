@@ -2,12 +2,12 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "windows-debug",
-      "displayName": "Windows Debug",
+      "name": "windows-release",
+      "displayName": "Windows Release",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/windows-debug",
+      "binaryDir": "${sourceDir}/build/windows-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "ORBBEC_SDK_ROOT": "C:/Program Files/OrbbecSDK 2.9.3"
       }
@@ -15,14 +15,14 @@
   ],
   "buildPresets": [
     {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug"
+      "name": "windows-release",
+      "configurePreset": "windows-release"
     }
   ],
   "testPresets": [
     {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug",
+      "name": "windows-release",
+      "configurePreset": "windows-release",
       "output": {
         "outputOnFailure": true
       }

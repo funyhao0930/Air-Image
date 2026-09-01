@@ -1,20 +1,26 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$MediaPipeSource,
-    [string]$OutputDirectory = "build/windows-debug"
+    [string]$OutputDirectory = "build/windows-release"
 )
 
 $ErrorActionPreference = "Stop"
 $ExpectedCommit = "f8ef212d5c962c0e853db7e59d217056b187084b"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ResolvedMediaPipe = (Resolve-Path $MediaPipeSource).Path
+$ResolvedMediaPipeGitPath = $ResolvedMediaPipe.Replace('\', '/')
+$ResolvedOutput = Join-Path $ProjectRoot $OutputDirectory
 $BazelOutputRoot = "C:\bzl-air"
 
 if (-not (Test-Path (Join-Path $ResolvedMediaPipe "WORKSPACE"))) {
     throw "MediaPipeSource must point to the root of the MediaPipe v0.10.35 repository."
 }
 
-$ActualCommit = (& git -C $ResolvedMediaPipe rev-parse HEAD).Trim()
+$ActualCommitOutput = & git -c "safe.directory=$ResolvedMediaPipeGitPath" -C $ResolvedMediaPipe rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or -not $ActualCommitOutput) {
+    throw "Could not read the MediaPipe repository commit at $ResolvedMediaPipe."
+}
+$ActualCommit = $ActualCommitOutput.Trim()
 if ($ActualCommit -ne $ExpectedCommit) {
     throw "Expected MediaPipe commit $ExpectedCommit but found $ActualCommit."
 }
@@ -51,11 +57,12 @@ finally {
     Pop-Location
 }
 
-$OpenCvRoot = Join-Path $ProjectRoot "build/windows-debug/vcpkg_installed/x64-windows"
+$OpenCvRoot = Join-Path $ResolvedOutput "vcpkg_installed/x64-windows"
 if (-not (Test-Path (Join-Path $OpenCvRoot "include/opencv4/opencv2/core.hpp"))) {
-    throw "The vcpkg OpenCV installation was not found at $OpenCvRoot. Configure the windows-debug CMake preset first."
+    throw "The vcpkg OpenCV installation was not found at $OpenCvRoot. Configure the selected CMake output directory first."
 }
-$OpenCvRepository = Join-Path $ProjectRoot "build/mediapipe_opencv_repo"
+$OpenCvRepositoryName = "mediapipe_opencv_repo_" + (Split-Path -Leaf $ResolvedOutput)
+$OpenCvRepository = Join-Path $ProjectRoot "build/$OpenCvRepositoryName"
 New-Item -ItemType Directory -Force $OpenCvRepository | Out-Null
 Copy-Item (Join-Path $ProjectRoot "mediapipe_bridge/opencv_vcpkg.BUILD") (Join-Path $OpenCvRepository "BUILD.bazel") -Force
 Copy-Item (Join-Path $ProjectRoot "mediapipe_bridge/opencv_vcpkg.WORKSPACE") (Join-Path $OpenCvRepository "WORKSPACE") -Force
@@ -100,7 +107,6 @@ if (-not (Test-Path $BuiltDll)) {
     throw "Bazel reported success but the expected DLL was not found: $BuiltDll"
 }
 
-$ResolvedOutput = Join-Path $ProjectRoot $OutputDirectory
 New-Item -ItemType Directory -Force $ResolvedOutput | Out-Null
 Copy-Item $BuiltDll (Join-Path $ResolvedOutput "mediapipe_hand_bridge.dll") -Force
 foreach ($RuntimeDll in @("opencv_core4.dll", "opencv_imgproc4.dll", "z.dll")) {

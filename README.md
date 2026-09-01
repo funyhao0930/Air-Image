@@ -31,18 +31,18 @@ OpenCV 與 yaml-cpp 由 `vcpkg.json` manifest 管理。
 在 Visual Studio Developer PowerShell 或 Developer Command Prompt 中：
 
 ```powershell
-cmake --preset windows-debug
-cmake --build --preset windows-debug
-ctest --preset windows-debug --output-on-failure
+cmake --preset windows-release
+cmake --build --preset windows-release
+ctest --preset windows-release --output-on-failure
 ```
 
 輸出位於：
 
 ```text
-build/windows-debug/aerial_touch_app.exe
+build/windows-release/aerial_touch_app.exe
 ```
 
-每次建置會將 `OrbbecSDK.dll`、`OrbbecSDKConfig.xml` 及 `extensions/` 一併部署到輸出目錄。`extensions/frameprocessor/ob_frame_processor.dll` 是 Gemini 2 depth stream 的必要 runtime；請從 `build/windows-debug` 執行，不要只複製單一 EXE。
+每次建置會將 `OrbbecSDK.dll`、`OrbbecSDKConfig.xml` 及 `extensions/` 一併部署到輸出目錄。`extensions/frameprocessor/ob_frame_processor.dll` 是 Gemini 2 depth stream 的必要 runtime；請從 `build/windows-release` 執行，不要只複製單一 EXE。
 
 ## 建置 MediaPipe bridge
 
@@ -64,7 +64,7 @@ git clone --depth 1 --branch v0.10.35 https://github.com/google-ai-edge/mediapip
 .\scripts\build_mediapipe_bridge.ps1 -MediaPipeSource .\third_party\mediapipe
 ```
 
-腳本會驗證 MediaPipe commit、套用鎖定於 v0.10.35 的 VS 2026 相容補丁，使用短 Bazel output root 避開 Windows 路徑長度限制，並複製下列 runtime 到 `build/windows-debug`：
+腳本會驗證 MediaPipe commit、套用鎖定於 v0.10.35 的 VS 2026 相容補丁，使用短 Bazel output root 避開 Windows 路徑長度限制，並複製下列 runtime 到 `build/windows-release`：
 
 - `mediapipe_hand_bridge.dll`
 - `opencv_core4.dll`
@@ -78,7 +78,7 @@ git clone --depth 1 --branch v0.10.35 https://github.com/google-ai-edge/mediapip
 從輸出目錄啟動，讓預設相對路徑可找到設定、模型及 DLL：
 
 ```powershell
-Set-Location build/windows-debug
+Set-Location build/windows-release
 .\aerial_touch_app.exe
 ```
 
@@ -104,7 +104,7 @@ Set-Location build/windows-debug
 .\orbbec_stream_probe.exe
 ```
 
-它會列出 SDK 偵測到的 sensor/profile，並依序測試 depth-only、color-only 及 RGB-D。
+它會列出 SDK 偵測到的感測器與串流設定，並以主程式相同的硬體對齊設定測試 RGB-D 影像。
 
 ## 測試
 
@@ -118,7 +118,7 @@ Set-Location build/windows-debug
 
 ## 尚待實機驗收
 
-Gemini 2 實機已驗證可啟動 depth-only、color-only 與 RGB-D stream，主程式也已持續運作超過 6 秒。仍需完成互動層的實機驗收：
+Gemini 2 實機已驗證可啟動硬體對齊的 RGB-D 串流，深度與彩色影像皆約 30 FPS；主程式也已持續運作超過 8 秒。仍需完成互動層的實機驗收：
 
 - RGB、Depth、D2C 與指尖 XYZ 正常。
 - 即時畫面至少 15 FPS。

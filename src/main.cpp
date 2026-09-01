@@ -5,6 +5,7 @@
 #include "aerial_touch/orbbec_camera.hpp"
 #include "aerial_touch/plane.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
+#include "aerial_touch/utf8_text.hpp"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -25,6 +26,7 @@
 namespace {
 
 constexpr int kIndexFingerTip = 8;
+constexpr const char* kWindowName = "aerial_touch_window";
 
 struct CliOptions {
     std::filesystem::path config{ "config/default.yaml" };
@@ -46,11 +48,11 @@ CliOptions parse_options(const int argc, char** argv) {
             options.model = argv[index + 1];
         }
         else {
-            throw std::runtime_error("Unknown option: " + key);
+            throw std::runtime_error(std::string(u8"無法識別的選項：") + key);
         }
     }
     if((argc - 1) % 2 != 0) {
-        throw std::runtime_error("Every option requires a value");
+        throw std::runtime_error(u8"每個選項都必須提供值");
     }
     return options;
 }
@@ -67,10 +69,11 @@ std::string vec2_text(const aerial_touch::Vec2 value) {
     return output.str();
 }
 
-void text_line(cv::Mat& image, const std::string& text, const int row, const cv::Scalar color = { 255, 255, 255 }) {
-    const cv::Point origin{ 12, 28 + row * 24 };
-    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX, 0.58, { 0, 0, 0 }, 3, cv::LINE_AA);
-    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX, 0.58, color, 1, cv::LINE_AA);
+void text_line(aerial_touch::Utf8TextCanvas& canvas,
+               const std::string& text,
+               const int row,
+               const cv::Scalar color = { 255, 255, 255 }) {
+    canvas.draw(text, { 12, 10 + row * 24 }, color);
 }
 
 void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {
@@ -115,6 +118,7 @@ void draw_keypad(cv::Mat& image, const aerial_touch::Keypad& keypad, const std::
 }  // namespace
 
 int main(int argc, char** argv) {
+    aerial_touch::enable_utf8_console();
     try {
         const CliOptions options = parse_options(argc, argv);
         const auto config = aerial_touch::load_app_config(options.config);
@@ -127,7 +131,7 @@ int main(int argc, char** argv) {
             std::cerr << camera.error() << '\n';
             return 2;
         }
-        std::cout << "Orbbec alignment: " << (camera.hardware_alignment() ? "hardware D2C" : "software D2C") << '\n';
+        std::cout << u8"Orbbec 對齊模式：" << (camera.hardware_alignment() ? u8"硬體 D2C" : u8"軟體 D2C") << '\n';
         if(!hand_tracker.available()) {
             std::cerr << hand_tracker.error() << '\n';
         }
@@ -140,12 +144,13 @@ int main(int argc, char** argv) {
         std::optional<std::string> current_key;
         std::optional<aerial_touch::PressEvent> last_event;
         bool calibrating = false;
-        std::string status = hand_tracker.available() ? "Press C to set the keypad area" : hand_tracker.error();
+        std::string status = hand_tracker.available() ? u8"按 C 開始設定數字鍵盤範圍" : hand_tracker.error();
         auto fps_start = std::chrono::steady_clock::now();
         int fps_frames = 0;
         float fps = 0.0F;
 
-        cv::namedWindow("Gemini 2 Aerial Keypad", cv::WINDOW_NORMAL);
+        cv::namedWindow(kWindowName, cv::WINDOW_NORMAL);
+        aerial_touch::set_utf8_window_title(kWindowName, u8"Gemini 2 空中鍵盤");
         for(;;) {
             const auto frame = camera.capture(100);
             if(!frame.has_value()) {
@@ -167,6 +172,7 @@ int main(int argc, char** argv) {
             current_uv.reset();
             current_distance.reset();
             current_key.reset();
+            std::optional<std::string> fingertip_pixel_text;
             if(hand.detected && hand.landmark_count > kIndexFingerTip) {
                 const int pixel_x = std::clamp(static_cast<int>(std::lround(hand.landmarks[kIndexFingerTip].x * frame->color_width)),
                                                0, frame->color_width - 1);
@@ -178,7 +184,8 @@ int main(int argc, char** argv) {
                 if(depth_mm.has_value()) {
                     current_xyz = camera.deproject(*frame, { static_cast<float>(pixel_x), static_cast<float>(pixel_y) }, *depth_mm);
                 }
-                text_line(display, "Fingertip pixel: " + std::to_string(pixel_x) + ", " + std::to_string(pixel_y), 2);
+                fingertip_pixel_text = std::string(u8"指尖像素：") + std::to_string(pixel_x) + ", "
+                                        + std::to_string(pixel_y);
             }
 
             if(current_xyz.has_value() && plane.has_value() && !calibrating) {
@@ -190,8 +197,8 @@ int main(int argc, char** argv) {
                                                   *current_xyz, *current_uv });
                 if(event.has_value()) {
                     last_event = event;
-                    std::cout << "PRESS key=" << event->key << " timestamp_ms=" << event->timestamp_ms
-                              << " xyz_mm=(" << vec3_text(event->fingertip_xyz_mm) << ") uv_mm=("
+                    std::cout << u8"按鍵事件 按鍵=" << event->key << u8" 時間戳記毫秒=" << event->timestamp_ms
+                              << u8" 指尖XYZ毫米=(" << vec3_text(event->fingertip_xyz_mm) << u8") 平面UV毫米=("
                               << vec2_text(event->plane_uv_mm) << ")\n";
                 }
             }
@@ -208,28 +215,42 @@ int main(int argc, char** argv) {
                 fps_start = now;
             }
 
-            text_line(display, "FPS: " + std::to_string(static_cast<int>(std::lround(fps))) + " | Align: "
-                                   + (camera.hardware_alignment() ? "HW D2C" : "SW D2C"), 0);
-            text_line(display, "Tracker: " + std::string(hand_tracker.available() ? (hand.detected ? "hand" : "no hand") : "unavailable"), 1,
-                      hand_tracker.available() ? cv::Scalar{ 100, 255, 100 } : cv::Scalar{ 80, 80, 255 });
-            if(current_xyz.has_value()) {
-                text_line(display, "XYZ: " + vec3_text(*current_xyz), 3);
-            }
-            if(current_uv.has_value() && current_distance.has_value()) {
-                text_line(display, "Plane UV: " + vec2_text(*current_uv), 4);
-                text_line(display, "Distance: " + std::to_string(static_cast<int>(std::lround(*current_distance)))
-                                       + " mm | Key: " + current_key.value_or("-"), 5);
-            }
-            text_line(display, "Touch: " + std::string(touch.armed() ? "ARMED" : "WAIT RELEASE"), 6);
-            text_line(display, "Calibration: " + std::string(calibrating ? "SET START/RIGHT/DOWN " : (plane ? "READY " : "NOT SET "))
-                                   + std::to_string(calibration_points.size()) + "/3", 7);
-            text_line(display, "Status: " + status, 8, { 80, 230, 255 });
-            text_line(display, "C calibrate | Space capture | Enter solve | R reset | Q/Esc quit", 9);
-            if(last_event.has_value()) {
-                text_line(display, "Last event: " + last_event->key, 10, { 50, 255, 255 });
-            }
             draw_keypad(display, keypad, current_key);
-            cv::imshow("Gemini 2 Aerial Keypad", display);
+            {
+                aerial_touch::Utf8TextCanvas canvas(display);
+                text_line(canvas, std::string("FPS: ") + std::to_string(static_cast<int>(std::lround(fps)))
+                                      + u8" | 對齊：" + (camera.hardware_alignment() ? u8"硬體 D2C" : u8"軟體 D2C"),
+                          0);
+                text_line(canvas,
+                          std::string(u8"追蹤：")
+                              + (hand_tracker.available() ? (hand.detected ? u8"偵測到手部" : u8"未偵測到手部")
+                                                          : u8"無法使用"),
+                          1, hand_tracker.available() ? cv::Scalar{ 100, 255, 100 } : cv::Scalar{ 80, 80, 255 });
+                if(fingertip_pixel_text.has_value()) {
+                    text_line(canvas, *fingertip_pixel_text, 2);
+                }
+                if(current_xyz.has_value()) {
+                    text_line(canvas, std::string("XYZ: ") + vec3_text(*current_xyz), 3);
+                }
+                if(current_uv.has_value() && current_distance.has_value()) {
+                    text_line(canvas, std::string(u8"平面 UV：") + vec2_text(*current_uv), 4);
+                    text_line(canvas, std::string(u8"距離：")
+                                          + std::to_string(static_cast<int>(std::lround(*current_distance)))
+                                          + u8" mm | 按鍵：" + current_key.value_or("-"),
+                              5);
+                }
+                text_line(canvas, std::string(u8"觸控：") + (touch.armed() ? u8"可觸發" : u8"等待手指離開"), 6);
+                text_line(canvas,
+                          std::string(u8"校正：") + (calibrating ? u8"進行中 " : (plane ? u8"完成 " : u8"尚未設定 "))
+                              + std::to_string(calibration_points.size()) + "/3",
+                          7);
+                text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
+                text_line(canvas, u8"C：校正 | 空白鍵：擷取 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
+                if(last_event.has_value()) {
+                    text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 10, { 50, 255, 255 });
+                }
+            }
+            cv::imshow(kWindowName, display);
 
             const int key = cv::waitKey(1);
             if(key == 'q' || key == 'Q' || key == 27) {
@@ -240,31 +261,35 @@ int main(int argc, char** argv) {
                 calibration_points.clear();
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
-                status = "Point at keypad start (top-left of 1); press Space";
+                status = u8"將手指移到 1 鍵左上角，然後按空白鍵";
             }
             else if(key == ' ' && calibrating) {
                 if(!current_xyz.has_value()) {
-                    status = "Cannot capture: fingertip depth is invalid";
+                    status = u8"無法擷取：指尖深度資料無效";
                 }
                 else if(calibration_points.size() < 3U) {
                     calibration_points.push_back(*current_xyz);
                     static constexpr std::array<const char*, 3> names{
-                        "keypad start (top-left of 1)",
-                        "a point to the right (toward 3)",
-                        "a point below the start (toward 0)",
+                        u8"1 鍵左上角",
+                        u8"3 鍵右側位置",
+                        u8"0 鍵下方位置",
                     };
-                    status = std::string("Captured ") + names[calibration_points.size() - 1U];
+                    static constexpr std::array<const char*, 2> next_instructions{
+                        u8"請移到 3 鍵右側位置並按空白鍵",
+                        u8"請移到 0 鍵下方位置並按空白鍵",
+                    };
+                    status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
                     if(calibration_points.size() < 3U) {
-                        status += std::string("; next: ") + names[calibration_points.size()] + "; press Space";
+                        status += std::string(u8"；接著") + next_instructions[calibration_points.size() - 1U];
                     }
                     else {
-                        status += "; press Enter to solve";
+                        status += u8"；請按 Enter 完成校正";
                     }
                 }
             }
             else if(key == 13 && calibrating) {
                 if(calibration_points.size() != 3U) {
-                    status = "Capture start, right and down points before solving";
+                    status = u8"請先依序記錄 1 鍵左上角、3 鍵右側位置與 0 鍵下方位置";
                 }
                 else {
                     plane = aerial_touch::Plane::from_calibration_points(calibration_points[0], calibration_points[1],
@@ -272,10 +297,10 @@ int main(int argc, char** argv) {
                                                                           config.calibration.minimum_point_distance_mm);
                     if(plane.has_value()) {
                         calibrating = false;
-                        status = "Calibration ready";
+                        status = u8"校正完成";
                     }
                     else {
-                        status = "Calibration rejected: points too close or nearly collinear";
+                        status = u8"校正失敗：三個位置距離太近或幾乎位於同一直線";
                     }
                 }
             }
@@ -284,7 +309,7 @@ int main(int argc, char** argv) {
                 calibration_points.clear();
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
-                status = "Reset complete; press C to set the keypad area";
+                status = u8"重設完成；按 C 重新設定數字鍵盤範圍";
             }
         }
         camera.stop();
@@ -292,7 +317,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     catch(const std::exception& error) {
-        std::cerr << "Fatal error: " << error.what() << '\n';
+        std::cerr << u8"嚴重錯誤：" << error.what() << '\n';
         return 1;
     }
 }

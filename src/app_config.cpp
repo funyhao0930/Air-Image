@@ -12,7 +12,7 @@ template<typename T>
 T required_value(const YAML::Node& root, const char* section, const char* key) {
     const auto node = root[section][key];
     if(!node) {
-        throw std::runtime_error(std::string("Missing configuration value: ") + section + "." + key);
+        throw std::runtime_error(std::string(u8"缺少設定值：") + section + "." + key);
     }
     return node.as<T>();
 }
@@ -42,7 +42,7 @@ AppConfig load_app_config(const std::filesystem::path& path) {
        || config.keypad.key_width_mm <= 0.0F || config.keypad.key_height_mm <= 0.0F
        || config.keypad.horizontal_gap_mm < 0.0F || config.keypad.vertical_gap_mm < 0.0F
        || config.calibration.minimum_point_distance_mm <= 0.0F) {
-        throw std::runtime_error("Configuration contains invalid geometry or threshold values");
+        throw std::runtime_error(u8"設定包含無效的幾何尺寸或臨界值");
     }
     return config;
 }

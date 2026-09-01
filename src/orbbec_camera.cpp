@@ -57,7 +57,7 @@ std::shared_ptr<ob::Config> software_align_config() {
 }
 
 std::string describe_error(const ob::Error& error) {
-    return std::string(error.what()) + " [function=" + error.getFunction() + ", args=" + error.getArgs() + "]";
+    return std::string(error.what()) + u8" [函式=" + error.getFunction() + u8", 參數=" + error.getArgs() + "]";
 }
 
 }  // namespace
@@ -96,10 +96,10 @@ bool OrbbecCamera::start() {
         return true;
     }
     catch(const ob::Error& error) {
-        impl_->error = "Orbbec start failed: " + describe_error(error);
+        impl_->error = std::string(u8"相機啟動失敗：") + describe_error(error);
     }
     catch(const std::exception& error) {
-        impl_->error = std::string("Orbbec start failed: ") + error.what();
+        impl_->error = std::string(u8"相機啟動失敗：") + error.what();
     }
     impl_->pipeline.reset();
     impl_->software_aligner.reset();
@@ -123,7 +123,7 @@ void OrbbecCamera::stop() {
 
 std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
     if(!impl_->running || !impl_->pipeline) {
-        impl_->error = "Orbbec camera is not running";
+        impl_->error = u8"Orbbec 相機尚未啟動";
         return std::nullopt;
     }
     try {
@@ -142,7 +142,7 @@ std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
         const auto color = frameset->getColorFrame();
         const auto depth = frameset->getDepthFrame();
         if(!color || !depth || color->getFormat() != OB_FORMAT_RGB) {
-            impl_->error = "Frame set is missing RGB or aligned depth data";
+            impl_->error = u8"影像幀缺少 RGB 或已對齊的深度資料";
             return std::nullopt;
         }
 
@@ -157,7 +157,7 @@ std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
         const auto rgb_bytes = static_cast<std::size_t>(frame.color_width) * static_cast<std::size_t>(frame.color_height) * 3U;
         const auto depth_values = static_cast<std::size_t>(frame.depth_width) * static_cast<std::size_t>(frame.depth_height);
         if(color->getDataSize() < rgb_bytes || depth->getDataSize() < depth_values * sizeof(std::uint16_t)) {
-            impl_->error = "Frame buffers are smaller than their stream profiles";
+            impl_->error = u8"影像緩衝區小於串流設定所需大小";
             return std::nullopt;
         }
         frame.rgb.resize(rgb_bytes);
@@ -175,17 +175,17 @@ std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
         frame.profiles_valid = intrinsic.fx > 0.0F && intrinsic.fy > 0.0F;
 
         if(!frame.valid()) {
-            impl_->error = "RGB and aligned depth frames do not share a valid pixel grid";
+            impl_->error = u8"RGB 與已對齊的深度影像沒有共用有效的像素座標";
             return std::nullopt;
         }
         impl_->error.clear();
         return frame;
     }
     catch(const ob::Error& error) {
-        impl_->error = "Orbbec capture failed: " + describe_error(error);
+        impl_->error = std::string(u8"Orbbec 影像擷取失敗：") + describe_error(error);
     }
     catch(const std::exception& error) {
-        impl_->error = std::string("Orbbec capture failed: ") + error.what();
+        impl_->error = std::string(u8"Orbbec 影像擷取失敗：") + error.what();
     }
     return std::nullopt;
 }
