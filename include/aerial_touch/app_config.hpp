@@ -23,5 +23,7 @@ struct AppConfig {
 };
 
 AppConfig load_app_config(const std::filesystem::path& path);
+void save_app_config(const AppConfig& config, const std::filesystem::path& path);
+void validate_app_config(const AppConfig& config);
 
 }  // namespace aerial_touch

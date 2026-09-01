@@ -6,6 +6,10 @@ namespace aerial_touch {
 
 TouchStateMachine::TouchStateMachine(const TouchConfig config) : config_(config) {}
 
+void TouchStateMachine::set_config(const TouchConfig config) {
+    config_ = config;
+}
+
 std::optional<PressEvent> TouchStateMachine::update(const TouchSample& sample) {
     const auto previous_timestamp_ms = last_tracking_timestamp_ms_;
     if(last_tracking_timestamp_ms_.has_value()

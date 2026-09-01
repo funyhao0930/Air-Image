@@ -23,6 +23,7 @@ add_library(aerial_touch_core STATIC
     src/depth_sampler.cpp
     src/plane.cpp
     src/keypad.cpp
+    src/settings_window.cpp
     src/touch_state_machine.cpp
     src/hand_tracker.cpp
 )
@@ -33,6 +34,9 @@ target_include_directories(aerial_touch_core
 )
 
 target_link_libraries(aerial_touch_core PUBLIC yaml-cpp::yaml-cpp)
+if(WIN32)
+    target_link_libraries(aerial_touch_core PUBLIC user32 gdi32 comctl32)
+endif()
 
 add_library(aerial_touch_runtime STATIC
     src/orbbec_camera.cpp

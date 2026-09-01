@@ -4,10 +4,12 @@
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/plane.hpp"
 #include "aerial_touch/rgbd_frame.hpp"
+#include "aerial_touch/settings_window.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -84,6 +86,14 @@ bool touch_uses_elapsed_time_for_approach_velocity() {
     return press.has_value() && press->key == "5";
 }
 
+bool touch_config_update_preserves_armed_state() {
+    aerial_touch::TouchStateMachine touch({ 10.0F, 20.0F, 0.0F, 300 });
+    touch.update({ 0, 30.0F, "5" });
+    touch.set_config({ 15.0F, 25.0F, 0.0F, 300 });
+    const auto press = touch.update({ 10, 10.0F, "5" });
+    return press.has_value() && press->key == "5";
+}
+
 bool tracking_loss_requires_release_before_pressing_again() {
     aerial_touch::TouchStateMachine touch({ 10.0F, 20.0F, 0.0F, 300 });
 
@@ -124,6 +134,86 @@ bool yaml_config_loads_all_runtime_thresholds() {
            && approximately_equal(config.calibration.minimum_point_distance_mm, 85.0F);
 }
 
+bool yaml_config_round_trips_through_save() {
+    const auto source = aerial_touch::load_app_config(
+        std::filesystem::path(TEST_SOURCE_DIR) / "tests" / "data" / "config.yaml");
+    const auto path = std::filesystem::temp_directory_path() / "aerial_touch_config_roundtrip.yaml";
+    aerial_touch::save_app_config(source, path);
+    const auto restored = aerial_touch::load_app_config(path);
+    std::filesystem::remove(path);
+    return restored.depth.sample_radius == source.depth.sample_radius
+           && approximately_equal(restored.touch.touch_threshold_mm, source.touch.touch_threshold_mm)
+           && approximately_equal(restored.touch.release_threshold_mm, source.touch.release_threshold_mm)
+           && approximately_equal(restored.touch.min_approach_velocity_mm_s, source.touch.min_approach_velocity_mm_s)
+           && restored.touch.tracking_timeout_ms == source.touch.tracking_timeout_ms
+           && approximately_equal(restored.keypad.key_width_mm, source.keypad.key_width_mm)
+           && approximately_equal(restored.keypad.key_height_mm, source.keypad.key_height_mm)
+           && approximately_equal(restored.keypad.horizontal_gap_mm, source.keypad.horizontal_gap_mm)
+           && approximately_equal(restored.keypad.vertical_gap_mm, source.keypad.vertical_gap_mm)
+           && approximately_equal(restored.calibration.minimum_point_distance_mm,
+                                  source.calibration.minimum_point_distance_mm);
+}
+
+bool yaml_config_rejects_nonfinite_values() {
+    const auto path = std::filesystem::temp_directory_path() / "aerial_touch_config_nonfinite.yaml";
+    std::ofstream output(path);
+    output << "depth:\n"
+              "  sample_radius: 2\n"
+              "touch:\n"
+              "  touch_threshold_mm: .nan\n"
+              "  release_threshold_mm: 20.0\n"
+              "  min_approach_velocity_mm_s: 0.0\n"
+              "  tracking_timeout_ms: 300\n"
+              "keypad:\n"
+              "  key_width_mm: 30.0\n"
+              "  key_height_mm: 30.0\n"
+              "  horizontal_gap_mm: 5.0\n"
+              "  vertical_gap_mm: 5.0\n"
+              "calibration:\n"
+              "  minimum_point_distance_mm: 80.0\n";
+    output.close();
+    bool rejected = false;
+    try {
+        static_cast<void>(aerial_touch::load_app_config(path));
+    }
+    catch(const std::exception&) {
+        rejected = true;
+    }
+    std::filesystem::remove(path);
+    return rejected;
+}
+
+bool app_config_validation_rejects_invalid_values() {
+    auto config = aerial_touch::AppConfig{};
+    config.touch.release_threshold_mm = config.touch.touch_threshold_mm;
+    bool rejects_equal_thresholds = false;
+    try {
+        aerial_touch::validate_app_config(config);
+    }
+    catch(const std::exception&) {
+        rejects_equal_thresholds = true;
+    }
+
+    config = aerial_touch::AppConfig{};
+    config.keypad.horizontal_gap_mm = -1.0F;
+    bool rejects_negative_gap = false;
+    try {
+        aerial_touch::validate_app_config(config);
+    }
+    catch(const std::exception&) {
+        rejects_negative_gap = true;
+    }
+    return rejects_equal_thresholds && rejects_negative_gap;
+}
+
+bool preview_classifies_touch_zones() {
+    using aerial_touch::PreviewZone;
+    return aerial_touch::classify_preview_zone(std::nullopt, 10.0F, 20.0F) == PreviewZone::Unknown
+           && aerial_touch::classify_preview_zone(5.0F, 10.0F, 20.0F) == PreviewZone::Touch
+           && aerial_touch::classify_preview_zone(15.0F, 10.0F, 20.0F) == PreviewZone::Hold
+           && aerial_touch::classify_preview_zone(20.0F, 10.0F, 20.0F) == PreviewZone::Release;
+}
+
 bool rgbd_frame_validates_alignment_and_buffer_sizes() {
     aerial_touch::RgbdFrame frame;
     frame.color_width = 2;
@@ -153,8 +243,12 @@ bool run_interaction_core_tests() {
            && keypad_maps_uv_to_expected_number()
            && touch_requires_release_before_repeat_press() && touch_does_not_press_outside_keypad()
            && touch_uses_elapsed_time_for_approach_velocity()
+           && touch_config_update_preserves_armed_state()
            && tracking_loss_requires_release_before_pressing_again()
            && press_event_keeps_fingertip_and_plane_coordinates() && missing_hand_tracker_dll_is_safe()
-           && yaml_config_loads_all_runtime_thresholds() && rgbd_frame_validates_alignment_and_buffer_sizes()
+           && yaml_config_loads_all_runtime_thresholds() && yaml_config_round_trips_through_save()
+           && yaml_config_rejects_nonfinite_values() && app_config_validation_rejects_invalid_values()
+           && preview_classifies_touch_zones()
+           && rgbd_frame_validates_alignment_and_buffer_sizes()
            && unavailable_hardware_d2c_uses_software_alignment();
 }

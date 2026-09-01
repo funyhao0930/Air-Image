@@ -34,6 +34,7 @@ class TouchStateMachine {
 public:
     explicit TouchStateMachine(TouchConfig config);
 
+    void set_config(TouchConfig config);
     std::optional<PressEvent> update(const TouchSample& sample);
     void mark_tracking_lost(std::int64_t timestamp_ms);
     bool armed() const;

@@ -4,6 +4,7 @@
 #include "aerial_touch/keypad.hpp"
 #include "aerial_touch/orbbec_camera.hpp"
 #include "aerial_touch/plane.hpp"
+#include "aerial_touch/settings_window.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
 #include "aerial_touch/utf8_text.hpp"
 
@@ -121,9 +122,27 @@ int main(int argc, char** argv) {
     aerial_touch::enable_utf8_console();
     try {
         const CliOptions options = parse_options(argc, argv);
-        const auto config = aerial_touch::load_app_config(options.config);
+        auto config = aerial_touch::load_app_config(options.config);
         aerial_touch::Keypad keypad(config.keypad);
         aerial_touch::TouchStateMachine touch(config.touch);
+        aerial_touch::SettingsWindow settings_window;
+        bool settings_window_created = false;
+
+        const auto apply_runtime_config = [&](const aerial_touch::AppConfig& candidate, std::string& error) {
+            try {
+                aerial_touch::Keypad candidate_keypad(candidate.keypad);
+                aerial_touch::save_app_config(candidate, options.config);
+                config = candidate;
+                keypad = std::move(candidate_keypad);
+                touch.set_config(config.touch);
+                return true;
+            }
+            catch(const std::exception& exception) {
+                error = exception.what();
+                return false;
+            }
+        };
+
         aerial_touch::HandTracker hand_tracker(options.bridge, options.model);
         aerial_touch::OrbbecCamera camera;
 
@@ -149,14 +168,35 @@ int main(int argc, char** argv) {
         int fps_frames = 0;
         float fps = 0.0F;
 
+        const auto toggle_settings_window = [&]() {
+            if(!settings_window_created) {
+                settings_window_created = settings_window.create(config, options.config, apply_runtime_config);
+                if(!settings_window_created) {
+                    status = u8"參數設定視窗建立失敗";
+                }
+            }
+            if(settings_window_created) {
+                if(settings_window.visible()) {
+                    settings_window.hide();
+                }
+                else {
+                    settings_window.show();
+                }
+            }
+        };
+
         cv::namedWindow(kWindowName, cv::WINDOW_NORMAL);
         aerial_touch::set_utf8_window_title(kWindowName, u8"Gemini 2 空中鍵盤");
         for(;;) {
+            settings_window.process_messages();
             const auto frame = camera.capture(100);
             if(!frame.has_value()) {
                 const int key = cv::waitKey(1);
                 if(key == 'q' || key == 'Q' || key == 27) {
                     break;
+                }
+                if(key == 's' || key == 'S') {
+                    toggle_settings_window();
                 }
                 continue;
             }
@@ -245,18 +285,22 @@ int main(int argc, char** argv) {
                               + std::to_string(calibration_points.size()) + "/3",
                           7);
                 text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
-                text_line(canvas, u8"C：校正 | 空白鍵：擷取 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
+                text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：擷取 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
                 if(last_event.has_value()) {
                     text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 10, { 50, 255, 255 });
                 }
             }
+            settings_window.update_preview({ current_distance, current_xyz.has_value(), current_key, touch.armed() });
             cv::imshow(kWindowName, display);
 
             const int key = cv::waitKey(1);
             if(key == 'q' || key == 'Q' || key == 27) {
                 break;
             }
-            if(key == 'c' || key == 'C') {
+            if(key == 's' || key == 'S') {
+                toggle_settings_window();
+            }
+            else if(key == 'c' || key == 'C') {
                 calibrating = true;
                 calibration_points.clear();
                 plane.reset();

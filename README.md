@@ -12,8 +12,9 @@ Windows 原生 C++ 原型：Orbbec Gemini 2 RGB-D、MediaPipe Hand Landmarker、
 - YAML 定義 30 mm 數字鍵、5 mm 間距及 touch/release 門檻。
 - 靠近方向、單次觸發、離開後 re-arm、追蹤遺失取消的狀態機。
 - OpenCV 骨架、XYZ、Plane UV、距離、狀態、FPS、鍵位與最近事件顯示。
+- `S` 開啟原生參數設定視窗，可調整完整 YAML 設定、即時預覽距離並套用保存。
 
-ASKA3D、雙手、系統按鍵注入及 GUI 設定面板不在本 MVP 範圍。
+ASKA3D、雙手及系統按鍵注入不在本 MVP 範圍。
 
 ## 環境
 
@@ -91,12 +92,15 @@ Set-Location build/windows-release
 操作鍵：
 
 - `C`：開始校正。
+- `S`：開啟或關閉參數設定視窗。
 - `Space`：依序擷取 O（左上）、U（右側）、V（下側）。
 - `Enter`：解算平面。
 - `R`：重設校正與觸控狀態。
 - `Q`／`Esc`：離開。
 
 事件只顯示於 OpenCV UI 並輸出 stdout，不注入 Windows 鍵盤。
+
+按 `S` 可調整深度取樣、觸控門檻、追蹤逾時、鍵盤尺寸／間距與校正點最小距離。設定視窗按「套用並儲存」後會立即更新目前執行中的參數，並寫回目前 `--config` 指定的 YAML；目前校正平面不會被清除，校正距離會在下一次校正時使用。
 
 若需要確認 SDK 是否可存取相機，可執行：
 

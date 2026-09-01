@@ -1,0 +1,85 @@
+<style>
+  :root { --ink:#e9f2f1; --muted:#8ba5a3; --line:#2c4648; --panel:#102326; --panel2:#0b191c; --cyan:#61e4dc; --amber:#ffca78; --red:#ff827b; }
+  .settings-shell { background:linear-gradient(135deg,#071215 0%,#0d2225 54%,#111c25 100%); color:var(--ink); padding:28px; border:1px solid #36595a; border-radius:18px; box-shadow:0 22px 60px #0008; font-family:system-ui,sans-serif; }
+  .settings-top { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; border-bottom:1px solid var(--line); padding-bottom:22px; }
+  .eyebrow { color:var(--cyan); letter-spacing:.18em; font-size:11px; font-weight:700; text-transform:uppercase; }
+  .settings-top h2 { margin:7px 0 4px; font-size:27px; letter-spacing:-.03em; }
+  .settings-top p { color:var(--muted); margin:0; font-size:13px; }
+  .status { background:#173538; color:var(--cyan); border:1px solid #3d8582; padding:9px 12px; border-radius:999px; font-size:12px; white-space:nowrap; }
+  .settings-grid { display:grid; grid-template-columns:1.15fr .85fr; gap:18px; margin-top:18px; }
+  .group { background:#0d1d20cc; border:1px solid var(--line); border-radius:12px; padding:17px; }
+  .group h3 { margin:0 0 14px; font-size:14px; color:#fff; }
+  .group h3 span { color:var(--cyan); font-size:11px; font-weight:500; margin-left:7px; }
+  .field { display:grid; grid-template-columns:145px 1fr 70px; align-items:center; gap:11px; padding:10px 0; border-top:1px solid #1d3436; }
+  .field:first-of-type { border-top:0; }
+  .field label { font-size:12px; color:#d7e3e0; }
+  .field small { display:block; color:var(--muted); font-size:10px; margin-top:3px; }
+  input[type=range] { width:100%; accent-color:var(--cyan); }
+  .number { width:58px; background:#081518; color:#fff; border:1px solid #496466; border-radius:6px; padding:7px 5px; text-align:right; font-size:12px; }
+  .unit { color:var(--muted); font-size:10px; margin-left:-7px; }
+  .preview { min-height:284px; position:relative; overflow:hidden; background:radial-gradient(circle at 50% 40%,#183b3d 0,#0c2023 45%,#081518 100%); }
+  .preview:after { content:'DEPTH PLANE / LIVE PREVIEW'; position:absolute; top:12px; right:14px; color:#75a4a0; font-size:9px; letter-spacing:.12em; }
+  .plane { position:absolute; left:18%; right:12%; top:27%; height:125px; border:1px solid #4b8f8b; transform:skewY(-10deg); background:linear-gradient(120deg,#1b575533,#6ee6dd0b); }
+  .plane:before { content:'虛擬鍵盤平面'; position:absolute; left:12px; bottom:7px; color:#8bc4bf; font-size:10px; }
+  .finger { position:absolute; left:54%; top:19%; width:14px; height:14px; border-radius:50%; background:var(--amber); box-shadow:0 0 0 8px #ffca7830, 0 0 28px #ffca78; }
+  .distance-line { position:absolute; left:55%; top:23%; height:66px; border-left:1px dashed var(--amber); }
+  .distance-label { position:absolute; left:57%; top:46%; color:var(--amber); font-size:12px; font-weight:700; }
+  .thresholds { display:flex; gap:7px; margin-top:15px; }
+  .threshold { flex:1; padding:10px; border-radius:8px; background:#0a1719; border:1px solid #2b4849; }
+  .threshold b { display:block; font-size:16px; }
+  .threshold span { color:var(--muted); font-size:10px; }
+  .threshold.touch b { color:var(--red); }
+  .threshold.release b { color:var(--cyan); }
+  .footer { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+  .hint { color:var(--muted); font-size:11px; }
+  .actions { display:flex; gap:9px; }
+  .mock-button { border:1px solid #496466; background:#122c2f; color:#e9f2f1; border-radius:7px; padding:9px 14px; font-weight:700; }
+  .mock-button.primary { background:var(--cyan); color:#062022; border-color:var(--cyan); }
+  @media (max-width:760px) { .settings-grid { grid-template-columns:1fr; } .field { grid-template-columns:125px 1fr 66px; } }
+</style>
+
+<div class="settings-shell">
+  <div class="settings-top">
+    <div>
+      <div class="eyebrow">AERIAL TOUCH / TUNING CONSOLE</div>
+      <h2>參數設定</h2>
+      <p>調整感測、觸控與鍵盤幾何；按下套用後於目前執行中生效。</p>
+    </div>
+    <div class="status">● 已連線 · Gemini 2</div>
+  </div>
+
+  <div class="settings-grid">
+    <div>
+      <div class="group">
+        <h3>觸控判定 <span>TOUCH LOGIC</span></h3>
+        <div class="field"><label>觸控門檻<small>接近至此距離觸發</small></label><input type="range" min="0" max="30" value="10"><input class="number" value="10.0"><span class="unit">mm</span></div>
+        <div class="field"><label>離開門檻<small>超過此距離重新 armed</small></label><input type="range" min="5" max="60" value="20"><input class="number" value="20.0"><span class="unit">mm</span></div>
+        <div class="field"><label>最低接近速度<small>防止慢速誤觸</small></label><input type="range" min="0" max="500" value="0"><input class="number" value="0.0"><span class="unit">mm/s</span></div>
+        <div class="field"><label>追蹤逾時<small>遺失手部後鎖定時間</small></label><input type="range" min="50" max="1000" value="300"><input class="number" value="300"><span class="unit">ms</span></div>
+      </div>
+
+      <div class="group" style="margin-top:18px">
+        <h3>深度與校正 <span>DEPTH / CALIBRATION</span></h3>
+        <div class="field"><label>深度取樣半徑<small>ROI 中位數範圍</small></label><input type="range" min="0" max="8" value="2"><input class="number" value="2"><span class="unit">px</span></div>
+        <div class="field"><label>校正點最小距離<small>避免三點太接近</small></label><input type="range" min="20" max="300" value="80"><input class="number" value="80.0"><span class="unit">mm</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="group preview">
+        <h3>觸控距離預覽 <span>LIVE MODEL</span></h3>
+        <div class="plane"></div><div class="finger"></div><div class="distance-line"></div><div class="distance-label">目前 20 mm</div>
+        <div class="thresholds"><div class="threshold touch"><b>10 mm</b><span>觸控區</span></div><div class="threshold release"><b>20 mm</b><span>離開 / 可再觸發</span></div></div>
+      </div>
+      <div class="group" style="margin-top:18px">
+        <h3>鍵盤幾何 <span>KEYPAD GEOMETRY</span></h3>
+        <div class="field"><label>按鍵寬度</label><input type="range" min="10" max="80" value="30"><input class="number" value="30.0"><span class="unit">mm</span></div>
+        <div class="field"><label>按鍵高度</label><input type="range" min="10" max="80" value="30"><input class="number" value="30.0"><span class="unit">mm</span></div>
+        <div class="field"><label>水平間距</label><input type="range" min="0" max="30" value="5"><input class="number" value="5.0"><span class="unit">mm</span></div>
+        <div class="field"><label>垂直間距</label><input type="range" min="0" max="30" value="5"><input class="number" value="5.0"><span class="unit">mm</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer"><div class="hint">設定檔：config/default.yaml　·　尚未修改</div><div class="actions"><button class="mock-button">恢復預設值</button><button class="mock-button">取消</button><button class="mock-button primary">套用並儲存</button></div></div>
+</div>
