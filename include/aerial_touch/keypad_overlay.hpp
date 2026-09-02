@@ -1,9 +1,27 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <string>
 
 namespace aerial_touch {
+
+struct KeypadOverlayRegion {
+    std::string key;
+    int x_px{};
+    int y_px{};
+    int width_px{};
+    int height_px{};
+};
+
+struct KeypadOverlayLayout {
+    int width_px{};
+    int height_px{};
+    int margin_px{};
+    std::array<KeypadOverlayRegion, 10> regions{};
+};
+
+KeypadOverlayLayout fixed_keypad_overlay_layout();
 
 enum class KeypadKeyVisualState {
     Idle,

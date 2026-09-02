@@ -104,20 +104,17 @@ void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {
 }
 
 void draw_keypad(cv::Mat& image,
-                 const std::optional<aerial_touch::Keypad>& keypad,
+                 const bool keypad_available,
                  const std::optional<std::string>& hovered_key,
                  const std::optional<std::string>& pressed_key) {
-    if(!keypad.has_value()) {
+    if(!keypad_available) {
         return;
     }
-    constexpr float scale = 1.1F;
-    const int origin_x = std::max(0, image.cols - 150);
-    const int origin_y = std::max(0, image.rows - 180);
-    for(const auto& region : keypad->regions()) {
-        const cv::Rect rect{ origin_x + static_cast<int>(region.u_min_mm * scale),
-                             origin_y + static_cast<int>(region.v_min_mm * scale),
-                             std::max(1, static_cast<int>((region.u_max_mm - region.u_min_mm) * scale)),
-                             std::max(1, static_cast<int>((region.v_max_mm - region.v_min_mm) * scale)) };
+    static const auto layout = aerial_touch::fixed_keypad_overlay_layout();
+    const int origin_x = std::max(layout.margin_px, image.cols - layout.width_px - layout.margin_px);
+    const int origin_y = std::max(layout.margin_px, image.rows - layout.height_px - layout.margin_px);
+    for(const auto& region : layout.regions) {
+        const cv::Rect rect{ origin_x + region.x_px, origin_y + region.y_px, region.width_px, region.height_px };
         const auto state = aerial_touch::keypad_key_visual_state(region.key, hovered_key, pressed_key);
         const bool filled = state != aerial_touch::KeypadKeyVisualState::Idle;
         const cv::Scalar color = state == aerial_touch::KeypadKeyVisualState::Pressed
@@ -463,7 +460,7 @@ int main(int argc, char** argv) {
             active_pressed_key = aerial_touch::currently_pressed_key(
                 active_pressed_key, touch.armed(), current_uv.has_value() && confirmed_tip, calibrating, current_key);
             const std::optional<std::string> pressed_key = active_pressed_key;
-            draw_keypad(display, keypad, current_key, pressed_key);
+            draw_keypad(display, keypad.has_value(), current_key, pressed_key);
             {
                 aerial_touch::Utf8TextCanvas canvas(display);
                 text_line(canvas, std::string(u8"主程式 FPS：") + std::to_string(static_cast<int>(std::lround(fps)))

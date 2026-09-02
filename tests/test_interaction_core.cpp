@@ -203,6 +203,15 @@ bool keypad_overlay_clears_pressed_key_when_not_currently_held() {
                                                    std::optional<std::string>{ "6" }).has_value();
 }
 
+bool fixed_keypad_overlay_layout_has_default_size() {
+    const auto layout = aerial_touch::fixed_keypad_overlay_layout();
+    return layout.width_px == 100 && layout.height_px == 135 && layout.margin_px == 12
+           && layout.regions.front().key == "1" && layout.regions.front().x_px == 0
+           && layout.regions.front().y_px == 0 && layout.regions.front().width_px == 30
+           && layout.regions.front().height_px == 30 && layout.regions.back().key == "0"
+           && layout.regions.back().x_px == 35 && layout.regions.back().y_px == 105;
+}
+
 bool touch_config_update_preserves_armed_state() {
     aerial_touch::TouchStateMachine touch({ 10.0F, 20.0F, 0.0F, 300 });
     touch.update({ 0, 30.0F, "5" });
@@ -536,6 +545,7 @@ bool run_interaction_core_tests() {
            && keypad_calibration_rejects_invalid_geometry()
            && keypad_maps_uv_to_expected_number() && keypad_overlay_prioritizes_pressed_key()
            && keypad_overlay_clears_pressed_key_when_not_currently_held()
+           && fixed_keypad_overlay_layout_has_default_size()
            && touch_requires_release_before_repeat_press() && touch_does_not_press_outside_keypad()
            && touch_uses_elapsed_time_for_approach_velocity()
            && touch_config_update_preserves_armed_state()
