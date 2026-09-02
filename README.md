@@ -4,15 +4,16 @@ Windows 原生 C++ 原型：Orbbec Gemini 2 RGB-D、MediaPipe Hand Landmarker、
 
 ## 已實作
 
-- Orbbec SDK 2.9.3 同步 RGB／Depth 擷取。
+- Orbbec SDK 2.9.3 同步 RGB／Depth 擷取，可由 YAML 選擇裝置支援的深度模式、深度精度、30／60 FPS 與 50／60 Hz 防閃爍。
 - 優先使用硬體 Depth-to-Color；不支援時改用 `ob::Align(OB_STREAM_COLOR)` 軟體對齊。
-- 5×5 ROI 有效深度中位數與 Orbbec 官方 2D-to-3D 座標轉換。
+- 裝置支援時依序套用 SDK Temporal、低強度 Spatial，再以 5×5 ROI 中位數與跳值拒絕穩定深度；Hole Filling 預設關閉。
 - MediaPipe v0.10.35 原生 C++ Hand Landmarker DLL；固定官方模型及 SHA-256。
-- O／U／V 三點校正、近距離與近共線拒絕、朝向相機的平面 normal。
-- YAML 定義 30 mm 數字鍵、5 mm 間距及 touch/release 門檻。
-- 靠近方向、單次觸發、離開後 re-arm、追蹤遺失取消的狀態機。
-- OpenCV 骨架、XYZ、Plane UV、距離、狀態、FPS、鍵位與最近事件顯示。
-- `S` 開啟原生參數設定視窗，可調整完整 YAML 設定、即時預覽距離並套用保存。
+- 食指指尖 XY 使用 One Euro Filter；短暫失追只保留畫面位置，不具按鍵事件資格。
+- 三個校正位置各收集 18 筆有效 XYZ，以中位數與 MAD 排除離群值並顯示散布。
+- YAML 定義 30 mm 數字鍵、5 mm 間距、2 mm 邊界遲滯及 touch/release 門檻。
+- 靠近方向、單次觸發、離開後 re-arm，以及短失追重建速度基線、逾時取消的狀態機。
+- OpenCV 顯示實際深度模式／精度／FPS／D2C、raw／filtered 距離、校正散布與最近事件。
+- `S` 開啟原生參數設定視窗，可調整主要互動參數、即時預覽距離並套用保存；相機與濾波進階項目先以 YAML 設定。
 
 ASKA3D、雙手及系統按鍵注入不在本 MVP 範圍。
 
@@ -93,14 +94,14 @@ Set-Location build/windows-release
 
 - `C`：開始校正。
 - `S`：開啟或關閉參數設定視窗。
-- `Space`：依序擷取 O（左上）、U（右側）、V（下側）。
+- `Space`：在 1 鍵左上角、3 鍵右側位置、0 鍵下方位置依序開始連續取樣。
 - `Enter`：解算平面。
 - `R`：重設校正與觸控狀態。
 - `Q`／`Esc`：離開。
 
 事件只顯示於 OpenCV UI 並輸出 stdout，不注入 Windows 鍵盤。
 
-按 `S` 可調整深度取樣、觸控門檻、追蹤逾時、鍵盤尺寸／間距與校正點最小距離。設定視窗按「套用並儲存」後會立即更新目前執行中的參數，並寫回目前 `--config` 指定的 YAML；目前校正平面不會被清除，校正距離會在下一次校正時使用。
+按 `S` 可調整深度取樣、觸控門檻、追蹤逾時、鍵盤尺寸／間距與校正點最小距離。設定視窗按「套用並儲存」後會立即更新目前執行中的參數，並保留相機、One Euro、深度歷史、校正取樣與邊界遲滯等 YAML 進階欄位；目前校正平面不會被清除。
 
 若需要確認 SDK 是否可存取相機，可執行：
 
@@ -114,10 +115,12 @@ Set-Location build/windows-release
 
 `ctest` 包含：
 
-- 深度 ROI median 與 invalid depth。
+- One Euro 靜止收斂與快速移動反應。
+- 深度 ROI median、單幀跳值、新深度重新鎖定與 invalid depth 歷史清除。
 - 平面、UV 投影、normal、鍵位 mapping。
-- 單次觸發、停留不重複、release re-arm、tracking loss。
-- YAML 設定載入及 RGB-D frame 完整性。
+- 校正中位數／MAD 離群排除與 2 mm 按鍵邊界遲滯。
+- 單次觸發、release re-arm、短暫 tracking loss 不產生幽靈事件且不取消既有 armed 狀態。
+- 新舊 YAML 設定載入、安全相機設定 fallback 及 RGB-D frame 完整性。
 - 真實 MediaPipe DLL／模型 smoke test：黑圖安全回傳無手；官方固定影像回傳 21 landmarks。
 
 ## 尚待實機驗收
@@ -126,5 +129,6 @@ Gemini 2 實機已驗證可啟動硬體對齊的 RGB-D 串流，深度與彩色�
 
 - RGB、Depth、D2C 與指尖 XYZ 正常。
 - 即時畫面至少 15 FPS。
-- 觸控事件端到端延遲不超過 150 ms。
+- 靜止平面距離抖動至少降低 30%，連續靜止 5 分鐘不得誤觸。
+- 快速點擊不漏觸，觸碰延遲不可比原版本增加超過 30 ms。
 - 三點校正後完成「靠近一次只輸出一次、停留不重複、離開後可再按」。

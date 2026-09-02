@@ -24,6 +24,7 @@ struct CameraExtrinsics {
 
 struct RgbdFrame {
     std::vector<std::uint8_t> rgb;
+    std::vector<std::uint16_t> raw_depth;
     std::vector<std::uint16_t> depth;
     int color_width{};
     int color_height{};
@@ -38,6 +39,7 @@ struct RgbdFrame {
     bool valid() const {
         return color_width > 0 && color_height > 0 && color_width == depth_width && color_height == depth_height
                && rgb.size() == static_cast<std::size_t>(color_width) * static_cast<std::size_t>(color_height) * 3U
+               && raw_depth.size() == static_cast<std::size_t>(depth_width) * static_cast<std::size_t>(depth_height)
                && depth.size() == static_cast<std::size_t>(depth_width) * static_cast<std::size_t>(depth_height)
                && depth_unit_mm > 0.0F && profiles_valid;
     }

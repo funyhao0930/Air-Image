@@ -1,6 +1,9 @@
 #include "aerial_touch/keypad.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <stdexcept>
 
 namespace aerial_touch {
 
@@ -32,6 +35,27 @@ std::optional<std::string> Keypad::key_at(const Vec2 uv_mm) const {
         }
     }
     return std::nullopt;
+}
+
+std::optional<std::string> Keypad::key_at(const Vec2 uv_mm,
+                                          const std::optional<std::string>& previous_key,
+                                          const float boundary_hysteresis_mm) const {
+    if(!std::isfinite(boundary_hysteresis_mm) || boundary_hysteresis_mm < 0.0F) {
+        throw std::invalid_argument(u8"按鍵邊界遲滯設定無效");
+    }
+    if(previous_key.has_value()) {
+        const auto previous_region = std::find_if(regions_.begin(), regions_.end(), [&](const KeyRegion& region) {
+            return region.key == *previous_key;
+        });
+        if(previous_region != regions_.end()
+           && uv_mm.x >= previous_region->u_min_mm - boundary_hysteresis_mm
+           && uv_mm.x < previous_region->u_max_mm + boundary_hysteresis_mm
+           && uv_mm.y >= previous_region->v_min_mm - boundary_hysteresis_mm
+           && uv_mm.y < previous_region->v_max_mm + boundary_hysteresis_mm) {
+            return previous_key;
+        }
+    }
+    return key_at(uv_mm);
 }
 
 const std::vector<KeyRegion>& Keypad::regions() const {

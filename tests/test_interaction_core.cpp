@@ -1,5 +1,6 @@
 #include "aerial_touch/app_config.hpp"
 #include "aerial_touch/alignment_mode.hpp"
+#include "aerial_touch/camera_settings.hpp"
 #include "aerial_touch/keypad.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/plane.hpp"
@@ -98,10 +99,13 @@ bool keypad_overlay_prioritizes_pressed_key() {
 
 bool keypad_overlay_clears_pressed_key_when_not_currently_held() {
     const std::optional<std::string> last_pressed_key{ "5" };
-    return aerial_touch::currently_pressed_key(last_pressed_key, false, true, false) == last_pressed_key
-           && !aerial_touch::currently_pressed_key(last_pressed_key, true, true, false).has_value()
-           && !aerial_touch::currently_pressed_key(last_pressed_key, false, false, false).has_value()
-           && !aerial_touch::currently_pressed_key(last_pressed_key, false, true, true).has_value();
+    return aerial_touch::currently_pressed_key(last_pressed_key, false, true, false, last_pressed_key)
+               == last_pressed_key
+           && !aerial_touch::currently_pressed_key(last_pressed_key, true, true, false, last_pressed_key).has_value()
+           && !aerial_touch::currently_pressed_key(last_pressed_key, false, false, false, last_pressed_key).has_value()
+           && !aerial_touch::currently_pressed_key(last_pressed_key, false, true, true, last_pressed_key).has_value()
+           && !aerial_touch::currently_pressed_key(last_pressed_key, false, true, false,
+                                                   std::optional<std::string>{ "6" }).has_value();
 }
 
 bool touch_config_update_preserves_armed_state() {
@@ -142,14 +146,30 @@ bool missing_hand_tracker_dll_is_safe() {
 bool yaml_config_loads_all_runtime_thresholds() {
     const auto config = aerial_touch::load_app_config(
         std::filesystem::path(TEST_SOURCE_DIR) / "tests" / "data" / "config.yaml");
-    return config.depth.sample_radius == 3 && approximately_equal(config.touch.touch_threshold_mm, 9.0F)
+    return config.camera.depth_work_mode == "Near"
+           && config.camera.depth_precision == "0.8mm"
+           && config.camera.preferred_fps == 30
+           && config.camera.sdk_temporal_filter && config.camera.sdk_spatial_filter
+           && !config.camera.hole_filling_filter && config.camera.rgb_power_line_frequency_hz == 60
+           && config.depth.sample_radius == 3 && config.depth.median_window_size == 5U
+           && approximately_equal(config.depth.max_jump_mm, 80.0F)
+           && config.depth.invalid_reset_frames == 3U
+           && approximately_equal(config.fingertip.min_cutoff_hz, 1.0F)
+           && approximately_equal(config.fingertip.beta, 0.12F)
+           && approximately_equal(config.fingertip.derivative_cutoff_hz, 1.0F)
+           && config.fingertip.display_hold_ms == 100
+           && approximately_equal(config.touch.touch_threshold_mm, 9.0F)
            && approximately_equal(config.touch.release_threshold_mm, 22.0F)
            && approximately_equal(config.touch.min_approach_velocity_mm_s, 45.0F)
            && config.touch.tracking_timeout_ms == 275 && approximately_equal(config.keypad.key_width_mm, 31.0F)
            && approximately_equal(config.keypad.key_height_mm, 32.0F)
            && approximately_equal(config.keypad.horizontal_gap_mm, 6.0F)
            && approximately_equal(config.keypad.vertical_gap_mm, 7.0F)
-           && approximately_equal(config.calibration.minimum_point_distance_mm, 85.0F);
+           && approximately_equal(config.keypad.boundary_hysteresis_mm, 2.0F)
+           && approximately_equal(config.calibration.minimum_point_distance_mm, 85.0F)
+           && config.calibration.required_samples == 18U
+           && approximately_equal(config.calibration.mad_multiplier, 3.5F)
+           && approximately_equal(config.calibration.minimum_outlier_threshold_mm, 2.0F);
 }
 
 bool yaml_config_round_trips_through_save() {
@@ -159,7 +179,21 @@ bool yaml_config_round_trips_through_save() {
     aerial_touch::save_app_config(source, path);
     const auto restored = aerial_touch::load_app_config(path);
     std::filesystem::remove(path);
-    return restored.depth.sample_radius == source.depth.sample_radius
+    return restored.camera.depth_work_mode == source.camera.depth_work_mode
+           && restored.camera.depth_precision == source.camera.depth_precision
+           && restored.camera.preferred_fps == source.camera.preferred_fps
+           && restored.camera.sdk_temporal_filter == source.camera.sdk_temporal_filter
+           && restored.camera.sdk_spatial_filter == source.camera.sdk_spatial_filter
+           && restored.camera.hole_filling_filter == source.camera.hole_filling_filter
+           && restored.camera.rgb_power_line_frequency_hz == source.camera.rgb_power_line_frequency_hz
+           && restored.depth.sample_radius == source.depth.sample_radius
+           && restored.depth.median_window_size == source.depth.median_window_size
+           && approximately_equal(restored.depth.max_jump_mm, source.depth.max_jump_mm)
+           && restored.depth.invalid_reset_frames == source.depth.invalid_reset_frames
+           && approximately_equal(restored.fingertip.min_cutoff_hz, source.fingertip.min_cutoff_hz)
+           && approximately_equal(restored.fingertip.beta, source.fingertip.beta)
+           && approximately_equal(restored.fingertip.derivative_cutoff_hz, source.fingertip.derivative_cutoff_hz)
+           && restored.fingertip.display_hold_ms == source.fingertip.display_hold_ms
            && approximately_equal(restored.touch.touch_threshold_mm, source.touch.touch_threshold_mm)
            && approximately_equal(restored.touch.release_threshold_mm, source.touch.release_threshold_mm)
            && approximately_equal(restored.touch.min_approach_velocity_mm_s, source.touch.min_approach_velocity_mm_s)
@@ -168,8 +202,77 @@ bool yaml_config_round_trips_through_save() {
            && approximately_equal(restored.keypad.key_height_mm, source.keypad.key_height_mm)
            && approximately_equal(restored.keypad.horizontal_gap_mm, source.keypad.horizontal_gap_mm)
            && approximately_equal(restored.keypad.vertical_gap_mm, source.keypad.vertical_gap_mm)
+           && approximately_equal(restored.keypad.boundary_hysteresis_mm, source.keypad.boundary_hysteresis_mm)
            && approximately_equal(restored.calibration.minimum_point_distance_mm,
-                                  source.calibration.minimum_point_distance_mm);
+                                  source.calibration.minimum_point_distance_mm)
+           && restored.calibration.required_samples == source.calibration.required_samples
+           && approximately_equal(restored.calibration.mad_multiplier, source.calibration.mad_multiplier)
+           && approximately_equal(restored.calibration.minimum_outlier_threshold_mm,
+                                  source.calibration.minimum_outlier_threshold_mm);
+}
+
+bool short_tracking_loss_cannot_trigger_on_reacquisition() {
+    aerial_touch::TouchStateMachine touch({ 10.0F, 20.0F, 0.0F, 300 });
+    touch.update({ 0, 30.0F, "5" });
+    touch.update({ 10, 15.0F, "5" });
+    touch.mark_tracking_lost(20);
+    const auto ghost = touch.update({ 30, 5.0F, "5" });
+    const auto press = touch.update({ 40, 4.0F, "5" });
+    return !ghost.has_value() && press.has_value();
+}
+
+bool unsupported_camera_settings_are_not_selected() {
+    const std::vector<std::string> work_modes{ "Default", "Far" };
+    const std::vector<std::string> precisions{ "1mm", "0.8mm" };
+    const std::vector<int> frequencies{ 50 };
+    return !aerial_touch::select_supported_setting(std::string("Near"), work_modes).has_value()
+           && aerial_touch::select_supported_setting(std::string("Far"), work_modes).value_or("") == "Far"
+           && !aerial_touch::select_supported_setting(std::string("0.4mm"), precisions).has_value()
+           && !aerial_touch::select_supported_setting(60, frequencies).has_value()
+           && aerial_touch::select_supported_setting(50, frequencies).value_or(0) == 50;
+}
+
+bool camera_fallback_and_filter_order_are_explicit() {
+    const auto fps = aerial_touch::fps_fallback_order(60);
+    aerial_touch::CameraConfig config;
+    config.sdk_temporal_filter = true;
+    config.sdk_spatial_filter = true;
+    config.hole_filling_filter = true;
+    const auto stages = aerial_touch::depth_filter_plan(config, true, true, true);
+    return fps == std::vector<int>({ 60, 30, 0 })
+           && stages == std::vector<aerial_touch::DepthFilterKind>({
+               aerial_touch::DepthFilterKind::Temporal,
+               aerial_touch::DepthFilterKind::Spatial,
+               aerial_touch::DepthFilterKind::HoleFilling,
+           });
+}
+
+bool camera_profile_resolver_requires_matching_rgb_and_depth_fps() {
+    const std::vector<aerial_touch::CameraProfileOption> options{
+        { 0U, 60, 30, true },
+        { 1U, 30, 30, true },
+        { 2U, 60, 60, false },
+    };
+    return aerial_touch::select_camera_profile_option(60, options).value_or(99U) == 1U;
+}
+
+bool failed_depth_filter_is_skipped_without_losing_the_frame() {
+    const auto stages = std::vector<aerial_touch::DepthFilterKind>{
+        aerial_touch::DepthFilterKind::Temporal,
+        aerial_touch::DepthFilterKind::Spatial,
+    };
+    const auto input = std::make_shared<int>(10);
+    const auto result = aerial_touch::process_resilient_filter_chain(
+        input, stages, [](const aerial_touch::DepthFilterKind stage, const std::shared_ptr<int>& frame) {
+            if(stage == aerial_touch::DepthFilterKind::Temporal) {
+                throw std::runtime_error("unsupported");
+            }
+            return std::make_shared<int>(*frame + 5);
+        });
+    return result.frame && *result.frame == 15
+           && result.failed_stages == std::vector<aerial_touch::DepthFilterKind>{
+               aerial_touch::DepthFilterKind::Temporal,
+           };
 }
 
 bool yaml_config_rejects_nonfinite_values() {
@@ -201,6 +304,39 @@ bool yaml_config_rejects_nonfinite_values() {
     return rejected;
 }
 
+bool legacy_yaml_uses_defaults_for_new_stabilization_fields() {
+    const auto path = std::filesystem::temp_directory_path() / "aerial_touch_legacy_config.yaml";
+    std::ofstream output(path);
+    output << "depth:\n"
+              "  sample_radius: 2\n"
+              "touch:\n"
+              "  touch_threshold_mm: 10.0\n"
+              "  release_threshold_mm: 20.0\n"
+              "  min_approach_velocity_mm_s: 0.0\n"
+              "  tracking_timeout_ms: 300\n"
+              "keypad:\n"
+              "  key_width_mm: 30.0\n"
+              "  key_height_mm: 30.0\n"
+              "  horizontal_gap_mm: 5.0\n"
+              "  vertical_gap_mm: 5.0\n"
+              "calibration:\n"
+              "  minimum_point_distance_mm: 80.0\n";
+    output.close();
+    bool uses_defaults = false;
+    try {
+        const auto config = aerial_touch::load_app_config(path);
+        uses_defaults = config.camera.preferred_fps == 30 && config.camera.sdk_temporal_filter
+                        && config.depth.median_window_size == 5U
+                        && approximately_equal(config.fingertip.beta, 0.12F)
+                        && approximately_equal(config.keypad.boundary_hysteresis_mm, 2.0F)
+                        && config.calibration.required_samples == 18U;
+    }
+    catch(const std::exception&) {
+    }
+    std::filesystem::remove(path);
+    return uses_defaults;
+}
+
 bool app_config_validation_rejects_invalid_values() {
     auto config = aerial_touch::AppConfig{};
     config.touch.release_threshold_mm = config.touch.touch_threshold_mm;
@@ -221,7 +357,18 @@ bool app_config_validation_rejects_invalid_values() {
     catch(const std::exception&) {
         rejects_negative_gap = true;
     }
-    return rejects_equal_thresholds && rejects_negative_gap;
+    config = aerial_touch::AppConfig{};
+    config.calibration.required_samples = 14U;
+    bool rejects_too_few_samples = false;
+    try {
+        aerial_touch::validate_app_config(config);
+    }
+    catch(const std::exception&) {
+        rejects_too_few_samples = true;
+    }
+
+    return rejects_equal_thresholds && rejects_negative_gap && rejects_too_few_samples
+           && approximately_equal(aerial_touch::AppConfig{}.touch.min_approach_velocity_mm_s, 40.0F);
 }
 
 bool preview_classifies_touch_zones() {
@@ -252,6 +399,14 @@ bool rgbd_frame_validates_alignment_and_buffer_sizes() {
     frame.depth.assign(4, 1000U);
     frame.depth_unit_mm = 1.0F;
     frame.profiles_valid = true;
+    if(frame.valid()) {
+        return false;
+    }
+    frame.raw_depth.assign(3, 1000U);
+    if(frame.valid()) {
+        return false;
+    }
+    frame.raw_depth.assign(4, 1000U);
     if(!frame.valid()) {
         return false;
     }
@@ -274,9 +429,15 @@ bool run_interaction_core_tests() {
            && touch_uses_elapsed_time_for_approach_velocity()
            && touch_config_update_preserves_armed_state()
            && tracking_loss_requires_release_before_pressing_again()
+           && short_tracking_loss_cannot_trigger_on_reacquisition()
            && press_event_keeps_fingertip_and_plane_coordinates() && missing_hand_tracker_dll_is_safe()
            && yaml_config_loads_all_runtime_thresholds() && yaml_config_round_trips_through_save()
+           && unsupported_camera_settings_are_not_selected()
+           && camera_fallback_and_filter_order_are_explicit()
+           && camera_profile_resolver_requires_matching_rgb_and_depth_fps()
+           && failed_depth_filter_is_skipped_without_losing_the_frame()
            && yaml_config_rejects_nonfinite_values() && app_config_validation_rejects_invalid_values()
+           && legacy_yaml_uses_defaults_for_new_stabilization_fields()
            && preview_classifies_touch_zones() && settings_layout_adapts_to_window_size()
            && rgbd_frame_validates_alignment_and_buffer_sizes()
            && unavailable_hardware_d2c_uses_software_alignment();

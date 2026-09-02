@@ -1,10 +1,28 @@
+camera:
+  depth_work_mode: ""
+  depth_precision: 1mm
+  preferred_fps: 30
+  sdk_temporal_filter: true
+  sdk_spatial_filter: true
+  hole_filling_filter: false
+  rgb_power_line_frequency_hz: 60
+
 depth:
   sample_radius: 2
+  median_window_size: 5
+  max_jump_mm: 80.0
+  invalid_reset_frames: 3
+
+fingertip:
+  min_cutoff_hz: 1.0
+  beta: 0.12
+  derivative_cutoff_hz: 1.0
+  display_hold_ms: 100
 
 touch:
   touch_threshold_mm: 10.0
   release_threshold_mm: 20.0
-  min_approach_velocity_mm_s: 0.0
+  min_approach_velocity_mm_s: 40.0
   tracking_timeout_ms: 300
 
 keypad:
@@ -12,6 +30,10 @@ keypad:
   key_height_mm: 30.0
   horizontal_gap_mm: 5.0
   vertical_gap_mm: 5.0
+  boundary_hysteresis_mm: 2.0
 
 calibration:
   minimum_point_distance_mm: 80.0
+  required_samples: 18
+  mad_multiplier: 3.5
+  minimum_outlier_threshold_mm: 2.0

@@ -11,7 +11,7 @@ namespace aerial_touch {
 struct TouchConfig {
     float touch_threshold_mm{ 10.0F };
     float release_threshold_mm{ 20.0F };
-    float min_approach_velocity_mm_s{ 0.0F };
+    float min_approach_velocity_mm_s{ 40.0F };
     std::int64_t tracking_timeout_ms{ 300 };
 };
 

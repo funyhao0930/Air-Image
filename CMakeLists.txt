@@ -20,11 +20,13 @@ find_package(OrbbecSDK CONFIG REQUIRED PATHS "${ORBBEC_SDK_ROOT}/lib" NO_DEFAULT
 
 add_library(aerial_touch_core STATIC
     src/app_config.cpp
+    src/calibration_sampler.cpp
     src/depth_sampler.cpp
     src/plane.cpp
     src/keypad.cpp
     src/keypad_overlay.cpp
     src/settings_window.cpp
+    src/signal_stabilizer.cpp
     src/touch_state_machine.cpp
     src/hand_tracker.cpp
 )
@@ -115,6 +117,7 @@ if(BUILD_TESTING)
     add_executable(aerial_touch_tests
         tests/test_depth_sampler.cpp
         tests/test_interaction_core.cpp
+        tests/test_signal_stability.cpp
     )
 
     target_link_libraries(aerial_touch_tests PRIVATE aerial_touch_core)

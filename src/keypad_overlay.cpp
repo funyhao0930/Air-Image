@@ -17,8 +17,10 @@ KeypadKeyVisualState keypad_key_visual_state(const std::string& key,
 std::optional<std::string> currently_pressed_key(const std::optional<std::string>& last_pressed_key,
                                                  const bool touch_armed,
                                                  const bool tracking_detected,
-                                                 const bool calibrating) {
-    if(!last_pressed_key.has_value() || touch_armed || !tracking_detected || calibrating) {
+                                                 const bool calibrating,
+                                                 const std::optional<std::string>& hovered_key) {
+    if(!last_pressed_key.has_value() || touch_armed || !tracking_detected || calibrating
+       || hovered_key != last_pressed_key) {
         return std::nullopt;
     }
     return last_pressed_key;

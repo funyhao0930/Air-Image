@@ -12,6 +12,7 @@ void TouchStateMachine::set_config(const TouchConfig config) {
 
 std::optional<PressEvent> TouchStateMachine::update(const TouchSample& sample) {
     const auto previous_timestamp_ms = last_tracking_timestamp_ms_;
+    const auto previous_distance_mm = previous_distance_mm_;
     if(last_tracking_timestamp_ms_.has_value()
        && sample.timestamp_ms - *last_tracking_timestamp_ms_ > config_.tracking_timeout_ms) {
         armed_ = false;
@@ -29,7 +30,7 @@ std::optional<PressEvent> TouchStateMachine::update(const TouchSample& sample) {
         }
     }
 
-    const bool approaching = previous_distance_mm_.has_value() && sample.signed_distance_mm < *previous_distance_mm_
+    const bool approaching = previous_distance_mm.has_value() && sample.signed_distance_mm < *previous_distance_mm
                              && approach_velocity >= config_.min_approach_velocity_mm_s;
     previous_distance_mm_ = sample.signed_distance_mm;
     last_tracking_timestamp_ms_ = sample.timestamp_ms;
@@ -42,10 +43,11 @@ std::optional<PressEvent> TouchStateMachine::update(const TouchSample& sample) {
 }
 
 void TouchStateMachine::mark_tracking_lost(const std::int64_t timestamp_ms) {
-    if(last_tracking_timestamp_ms_.has_value() && timestamp_ms - *last_tracking_timestamp_ms_ > config_.tracking_timeout_ms) {
+    if(last_tracking_timestamp_ms_.has_value()
+       && timestamp_ms - *last_tracking_timestamp_ms_ > config_.tracking_timeout_ms) {
         armed_ = false;
-        previous_distance_mm_.reset();
     }
+    previous_distance_mm_.reset();
 }
 
 bool TouchStateMachine::armed() const {

@@ -5,6 +5,7 @@
 #include <vector>
 
 bool run_interaction_core_tests();
+bool run_signal_stability_tests();
 
 int main() {
     const std::vector<std::uint16_t> depth{
@@ -24,5 +25,5 @@ int main() {
     const auto invalid_sample = aerial_touch::sample_depth_median_mm(invalid_depth, 5, 5, 2, 2, 2, 1.0F);
     assert(!invalid_sample.has_value());
 
-    return run_interaction_core_tests() ? 0 : 1;
+    return run_interaction_core_tests() && run_signal_stability_tests() ? 0 : 1;
 }

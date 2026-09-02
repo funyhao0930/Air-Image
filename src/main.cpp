@@ -1,4 +1,5 @@
 #include "aerial_touch/app_config.hpp"
+#include "aerial_touch/calibration_sampler.hpp"
 #include "aerial_touch/depth_sampler.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/keypad.hpp"
@@ -6,6 +7,7 @@
 #include "aerial_touch/orbbec_camera.hpp"
 #include "aerial_touch/plane.hpp"
 #include "aerial_touch/settings_window.hpp"
+#include "aerial_touch/signal_stabilizer.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
 #include "aerial_touch/utf8_text.hpp"
 
@@ -135,8 +137,31 @@ int main(int argc, char** argv) {
         auto config = aerial_touch::load_app_config(options.config);
         aerial_touch::Keypad keypad(config.keypad);
         aerial_touch::TouchStateMachine touch(config.touch);
+        aerial_touch::HandSignalStabilizer fingertip_stabilizer(
+            { { config.fingertip.min_cutoff_hz, config.fingertip.beta, config.fingertip.derivative_cutoff_hz },
+              config.fingertip.display_hold_ms });
+        aerial_touch::DepthSignalStabilizer depth_stabilizer(
+            { config.depth.median_window_size, config.depth.max_jump_mm, config.depth.invalid_reset_frames });
+        aerial_touch::DepthFreshnessGate raw_depth_freshness(config.depth.invalid_reset_frames);
+        aerial_touch::CalibrationSampleCollector calibration_collector(
+            { config.calibration.required_samples, config.calibration.mad_multiplier,
+              config.calibration.minimum_outlier_threshold_mm });
         aerial_touch::SettingsWindow settings_window;
         bool settings_window_created = false;
+        std::optional<aerial_touch::Plane> plane;
+        std::vector<aerial_touch::Vec3> calibration_points;
+        std::vector<aerial_touch::Vec3> calibration_spreads;
+        std::optional<aerial_touch::Vec3> current_xyz;
+        std::optional<aerial_touch::Vec2> current_uv;
+        std::optional<float> current_distance;
+        std::optional<float> raw_distance;
+        std::optional<std::string> current_key;
+        std::optional<std::string> sticky_key;
+        std::optional<std::string> active_pressed_key;
+        std::optional<aerial_touch::PressEvent> last_event;
+        std::optional<std::int64_t> last_confirmed_timestamp_ms;
+        bool calibrating = false;
+        bool collecting_calibration_samples = false;
 
         const auto apply_runtime_config = [&](const aerial_touch::AppConfig& candidate, std::string& error) {
             try {
@@ -145,6 +170,8 @@ int main(int argc, char** argv) {
                 config = candidate;
                 keypad = std::move(candidate_keypad);
                 touch.set_config(config.touch);
+                sticky_key.reset();
+                active_pressed_key.reset();
                 return true;
             }
             catch(const std::exception& exception) {
@@ -156,23 +183,22 @@ int main(int argc, char** argv) {
         aerial_touch::HandTracker hand_tracker(options.bridge, options.model);
         aerial_touch::OrbbecCamera camera;
 
-        if(!camera.start()) {
+        if(!camera.start(config.camera)) {
             std::cerr << camera.error() << '\n';
             return 2;
         }
-        std::cout << u8"Orbbec 對齊模式：" << (camera.hardware_alignment() ? u8"硬體 D2C" : u8"軟體 D2C") << '\n';
+        const auto& camera_info = camera.runtime_info();
+        std::cout << u8"Orbbec 對齊模式：" << (camera.hardware_alignment() ? u8"硬體 D2C" : u8"軟體 D2C")
+                  << u8"；深度模式=" << camera_info.depth_work_mode
+                  << u8"；深度精度=" << camera_info.depth_precision
+                  << u8"；FPS=" << camera_info.fps << '\n';
+        for(const auto& warning : camera_info.warnings) {
+            std::cerr << u8"相機設定警告：" << warning << '\n';
+        }
         if(!hand_tracker.available()) {
             std::cerr << hand_tracker.error() << '\n';
         }
 
-        std::optional<aerial_touch::Plane> plane;
-        std::vector<aerial_touch::Vec3> calibration_points;
-        std::optional<aerial_touch::Vec3> current_xyz;
-        std::optional<aerial_touch::Vec2> current_uv;
-        std::optional<float> current_distance;
-        std::optional<std::string> current_key;
-        std::optional<aerial_touch::PressEvent> last_event;
-        bool calibrating = false;
         std::string status = hand_tracker.available() ? u8"按 C 開始設定數字鍵盤範圍" : hand_tracker.error();
         auto fps_start = std::chrono::steady_clock::now();
         int fps_frames = 0;
@@ -201,6 +227,18 @@ int main(int argc, char** argv) {
             settings_window.process_messages();
             const auto frame = camera.capture(100);
             if(!frame.has_value()) {
+                touch.mark_tracking_lost(last_confirmed_timestamp_ms.value_or(0) + 1);
+                fingertip_stabilizer.reset();
+                depth_stabilizer.reset();
+                raw_depth_freshness.reset();
+                camera.reset_depth_filters();
+                sticky_key.reset();
+                active_pressed_key.reset();
+                if(collecting_calibration_samples) {
+                    calibration_collector.clear();
+                    collecting_calibration_samples = false;
+                    status = u8"校正取樣中斷：相機影像暫時無效，請按空白鍵重試";
+                }
                 const int key = cv::waitKey(1);
                 if(key == 'q' || key == 'Q' || key == 27) {
                     break;
@@ -221,39 +259,154 @@ int main(int argc, char** argv) {
             current_xyz.reset();
             current_uv.reset();
             current_distance.reset();
+            raw_distance.reset();
             current_key.reset();
             std::optional<std::string> fingertip_pixel_text;
-            if(hand.detected && hand.landmark_count > kIndexFingerTip) {
-                const int pixel_x = std::clamp(static_cast<int>(std::lround(hand.landmarks[kIndexFingerTip].x * frame->color_width)),
-                                               0, frame->color_width - 1);
-                const int pixel_y = std::clamp(static_cast<int>(std::lround(hand.landmarks[kIndexFingerTip].y * frame->color_height)),
-                                               0, frame->color_height - 1);
-                const auto depth_mm = aerial_touch::sample_depth_median_mm(frame->depth, frame->depth_width, frame->depth_height,
-                                                                           pixel_x, pixel_y, config.depth.sample_radius,
-                                                                           frame->depth_unit_mm);
-                if(depth_mm.has_value()) {
-                    current_xyz = camera.deproject(*frame, { static_cast<float>(pixel_x), static_cast<float>(pixel_y) }, *depth_mm);
-                }
-                fingertip_pixel_text = std::string(u8"指尖像素：") + std::to_string(pixel_x) + ", "
-                                        + std::to_string(pixel_y);
+            std::optional<aerial_touch::Vec2> raw_pixel;
+            if(hand.detected && hand.landmark_count > kIndexFingerTip
+               && std::isfinite(hand.landmarks[kIndexFingerTip].x)
+               && std::isfinite(hand.landmarks[kIndexFingerTip].y)) {
+                raw_pixel = aerial_touch::Vec2{
+                    hand.landmarks[kIndexFingerTip].x * static_cast<float>(frame->color_width),
+                    hand.landmarks[kIndexFingerTip].y * static_cast<float>(frame->color_height),
+                };
+            }
+            const auto stabilized_tip = fingertip_stabilizer.update(raw_pixel, frame->timestamp_ms);
+            if(stabilized_tip.has_value()) {
+                const int filtered_x = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.x)),
+                                                  0, frame->color_width - 1);
+                const int filtered_y = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.y)),
+                                                  0, frame->color_height - 1);
+                cv::circle(display, { filtered_x, filtered_y }, 5,
+                           stabilized_tip->confirmed_this_frame ? cv::Scalar{ 255, 120, 20 }
+                                                                  : cv::Scalar{ 160, 160, 160 },
+                           2, cv::LINE_AA);
+                fingertip_pixel_text = std::string(u8"指尖像素（濾波）：") + std::to_string(filtered_x) + ", "
+                                        + std::to_string(filtered_y)
+                                        + (stabilized_tip->confirmed_this_frame ? "" : u8"（僅保留顯示）");
             }
 
-            if(current_xyz.has_value() && plane.has_value() && !calibrating) {
+            std::optional<aerial_touch::Vec3> raw_xyz;
+            const bool confirmed_tip = stabilized_tip.has_value() && stabilized_tip->confirmed_this_frame;
+            if(confirmed_tip) {
+                last_confirmed_timestamp_ms = frame->timestamp_ms;
+                const int raw_x = std::clamp(static_cast<int>(std::lround(stabilized_tip->raw.x)),
+                                             0, frame->color_width - 1);
+                const int raw_y = std::clamp(static_cast<int>(std::lround(stabilized_tip->raw.y)),
+                                             0, frame->color_height - 1);
+                const int filtered_x = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.x)),
+                                                  0, frame->color_width - 1);
+                const int filtered_y = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.y)),
+                                                  0, frame->color_height - 1);
+                const auto raw_depth_mm = aerial_touch::sample_depth_median_mm(
+                    frame->raw_depth, frame->depth_width, frame->depth_height, raw_x, raw_y,
+                    config.depth.sample_radius, frame->depth_unit_mm);
+                const auto sdk_depth_mm = aerial_touch::sample_depth_median_mm(
+                    frame->depth, frame->depth_width, frame->depth_height, filtered_x, filtered_y,
+                    config.depth.sample_radius, frame->depth_unit_mm);
+                if(raw_depth_freshness.update(raw_depth_mm)) {
+                    const auto stable_depth_mm = depth_stabilizer.update(sdk_depth_mm);
+                    if(stable_depth_mm.has_value()) {
+                        current_xyz = camera.deproject(
+                            *frame, { static_cast<float>(filtered_x), static_cast<float>(filtered_y) },
+                            *stable_depth_mm);
+                    }
+                }
+                else {
+                    depth_stabilizer.reset();
+                    camera.reset_depth_filters();
+                }
+                if(raw_depth_mm.has_value()) {
+                    raw_xyz = camera.deproject(*frame, { static_cast<float>(raw_x), static_cast<float>(raw_y) },
+                                               *raw_depth_mm);
+                }
+            }
+            else {
+                static_cast<void>(depth_stabilizer.update(std::nullopt));
+                if(last_confirmed_timestamp_ms.has_value()
+                   && frame->timestamp_ms - *last_confirmed_timestamp_ms > config.touch.tracking_timeout_ms) {
+                    fingertip_stabilizer.reset();
+                    depth_stabilizer.reset();
+                    raw_depth_freshness.reset();
+                    camera.reset_depth_filters();
+                    last_confirmed_timestamp_ms.reset();
+                    if(collecting_calibration_samples) {
+                        calibration_collector.clear();
+                        collecting_calibration_samples = false;
+                        status = u8"校正取樣中斷：追蹤逾時，請按空白鍵重試";
+                    }
+                }
+            }
+
+            if(collecting_calibration_samples && current_xyz.has_value()) {
+                calibration_collector.add(*current_xyz);
+                status = std::string(u8"校正點取樣：") + std::to_string(calibration_collector.sample_count()) + "/"
+                         + std::to_string(config.calibration.required_samples) + u8"，請保持不動";
+                const auto sample_result = calibration_collector.result();
+                if(sample_result.has_value()) {
+                    calibration_points.push_back(sample_result->point);
+                    calibration_spreads.push_back(sample_result->spread);
+                    calibration_collector.clear();
+                    collecting_calibration_samples = false;
+                    static constexpr std::array<const char*, 3> names{
+                        u8"1 鍵左上角", u8"3 鍵右側位置", u8"0 鍵下方位置",
+                    };
+                    static constexpr std::array<const char*, 2> next_instructions{
+                        u8"請移到 3 鍵右側位置並按空白鍵開始取樣",
+                        u8"請移到 0 鍵下方位置並按空白鍵開始取樣",
+                    };
+                    status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
+                    if(calibration_points.size() < 3U) {
+                        status += std::string(u8"；") + next_instructions[calibration_points.size() - 1U];
+                    }
+                    else {
+                        status += u8"；請按 Enter 完成校正";
+                    }
+                }
+                else if(calibration_collector.sample_count() >= 20U) {
+                    calibration_collector.clear();
+                    collecting_calibration_samples = false;
+                    status = u8"校正點散布過大或有效樣本不足，請保持手指不動後按空白鍵重試";
+                }
+            }
+
+            if(current_xyz.has_value() && plane.has_value() && !calibrating && confirmed_tip) {
                 const auto projected = plane->project(*current_xyz);
-                current_uv = aerial_touch::Vec2{ projected.u_mm, projected.v_mm };
-                current_distance = projected.signed_distance_mm;
-                current_key = keypad.key_at(*current_uv);
-                const auto event = touch.update({ frame->timestamp_ms, projected.signed_distance_mm, current_key,
+                if(std::isfinite(projected.u_mm) && std::isfinite(projected.v_mm)
+                   && std::isfinite(projected.signed_distance_mm)) {
+                    current_uv = aerial_touch::Vec2{ projected.u_mm, projected.v_mm };
+                    current_distance = projected.signed_distance_mm;
+                    sticky_key = keypad.key_at(*current_uv, sticky_key, config.keypad.boundary_hysteresis_mm);
+                    current_key = sticky_key;
+                }
+                if(raw_xyz.has_value()) {
+                    const auto raw_projected = plane->project(*raw_xyz);
+                    if(std::isfinite(raw_projected.signed_distance_mm)) {
+                        raw_distance = raw_projected.signed_distance_mm;
+                    }
+                }
+            }
+            if(current_xyz.has_value() && current_uv.has_value() && current_distance.has_value()
+               && !calibrating && confirmed_tip) {
+                const auto event = touch.update({ frame->timestamp_ms, *current_distance, current_key,
                                                   *current_xyz, *current_uv });
                 if(event.has_value()) {
                     last_event = event;
+                    active_pressed_key = event->key;
                     std::cout << u8"按鍵事件 按鍵=" << event->key << u8" 時間戳記毫秒=" << event->timestamp_ms
                               << u8" 指尖XYZ毫米=(" << vec3_text(event->fingertip_xyz_mm) << u8") 平面UV毫米=("
-                              << vec2_text(event->plane_uv_mm) << ")\n";
+                              << vec2_text(event->plane_uv_mm) << u8") 原始距離毫米="
+                              << (raw_distance.has_value() ? std::to_string(*raw_distance) : "N/A")
+                              << u8" 濾波距離毫米=" << *current_distance << "\n";
+                }
+                if(touch.armed()) {
+                    active_pressed_key.reset();
                 }
             }
             else {
                 touch.mark_tracking_lost(frame->timestamp_ms);
+                sticky_key.reset();
+                active_pressed_key.reset();
             }
 
             ++fps_frames;
@@ -265,19 +418,20 @@ int main(int argc, char** argv) {
                 fps_start = now;
             }
 
-            const std::optional<std::string> last_pressed_key =
-                last_event.has_value() ? std::optional<std::string>{ last_event->key } : std::nullopt;
-            const std::optional<std::string> pressed_key = aerial_touch::currently_pressed_key(
-                last_pressed_key, touch.armed(), current_xyz.has_value(), calibrating);
+            active_pressed_key = aerial_touch::currently_pressed_key(
+                active_pressed_key, touch.armed(), current_uv.has_value() && confirmed_tip, calibrating, current_key);
+            const std::optional<std::string> pressed_key = active_pressed_key;
             draw_keypad(display, keypad, current_key, pressed_key);
             {
                 aerial_touch::Utf8TextCanvas canvas(display);
-                text_line(canvas, std::string("FPS: ") + std::to_string(static_cast<int>(std::lround(fps)))
+                text_line(canvas, std::string(u8"主程式 FPS：") + std::to_string(static_cast<int>(std::lround(fps)))
+                                      + u8" | 相機：" + std::to_string(camera_info.fps) + " FPS "
+                                      + camera_info.depth_work_mode + " " + camera_info.depth_precision
                                       + u8" | 對齊：" + (camera.hardware_alignment() ? u8"硬體 D2C" : u8"軟體 D2C"),
                           0);
                 text_line(canvas,
                           std::string(u8"追蹤：")
-                              + (hand_tracker.available() ? (hand.detected ? u8"偵測到手部" : u8"未偵測到手部")
+                              + (hand_tracker.available() ? (confirmed_tip ? u8"本幀有效" : u8"未取得本幀觀測")
                                                           : u8"無法使用"),
                           1, hand_tracker.available() ? cv::Scalar{ 100, 255, 100 } : cv::Scalar{ 80, 80, 255 });
                 if(fingertip_pixel_text.has_value()) {
@@ -290,7 +444,11 @@ int main(int argc, char** argv) {
                     text_line(canvas, std::string(u8"平面 UV：") + vec2_text(*current_uv), 4);
                     text_line(canvas, std::string(u8"距離：")
                                           + std::to_string(static_cast<int>(std::lround(*current_distance)))
-                                          + u8" mm | 按鍵：" + current_key.value_or("-"),
+                                          + u8" mm（濾波） | 原始："
+                                          + (raw_distance.has_value()
+                                                 ? std::to_string(static_cast<int>(std::lround(*raw_distance))) + " mm"
+                                                 : "-")
+                                          + u8" | 按鍵：" + current_key.value_or("-"),
                               5);
                 }
                 text_line(canvas, std::string(u8"觸控：") + (touch.armed() ? u8"可觸發" : u8"等待手指離開"), 6);
@@ -299,12 +457,23 @@ int main(int argc, char** argv) {
                               + std::to_string(calibration_points.size()) + "/3",
                           7);
                 text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
-                text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：擷取 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
+                text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：開始取樣 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
+                if(!camera_info.warnings.empty()) {
+                    text_line(canvas, std::string(u8"相機警告：") + camera_info.warnings.back(), 10,
+                              { 80, 180, 255 });
+                }
                 if(last_event.has_value()) {
-                    text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 10, { 50, 255, 255 });
+                    text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 11, { 50, 255, 255 });
+                }
+                for(std::size_t index = 0; index < calibration_spreads.size(); ++index) {
+                    text_line(canvas,
+                              std::string(u8"校正點 ") + std::to_string(index + 1U) + u8" 散布 XYZ："
+                                  + vec3_text(calibration_spreads[index]),
+                              12 + static_cast<int>(index), { 180, 220, 255 });
                 }
             }
-            settings_window.update_preview({ current_distance, current_xyz.has_value(), current_key, touch.armed() });
+            settings_window.update_preview({ current_distance, current_uv.has_value() && confirmed_tip,
+                                             current_key, touch.armed() });
             cv::imshow(kWindowName, display);
 
             const int key = cv::waitKey(1);
@@ -317,36 +486,31 @@ int main(int argc, char** argv) {
             else if(key == 'c' || key == 'C') {
                 calibrating = true;
                 calibration_points.clear();
+                calibration_spreads.clear();
+                calibration_collector.clear();
+                collecting_calibration_samples = false;
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
-                status = u8"將手指移到 1 鍵左上角，然後按空白鍵";
+                sticky_key.reset();
+                active_pressed_key.reset();
+                status = u8"將手指移到 1 鍵左上角，保持不動後按空白鍵開始取樣";
             }
             else if(key == ' ' && calibrating) {
-                if(!current_xyz.has_value()) {
-                    status = u8"無法擷取：指尖深度資料無效";
+                if(collecting_calibration_samples) {
+                    status = u8"校正點正在取樣，請保持手指不動";
                 }
                 else if(calibration_points.size() < 3U) {
-                    calibration_points.push_back(*current_xyz);
-                    static constexpr std::array<const char*, 3> names{
-                        u8"1 鍵左上角",
-                        u8"3 鍵右側位置",
-                        u8"0 鍵下方位置",
-                    };
-                    static constexpr std::array<const char*, 2> next_instructions{
-                        u8"請移到 3 鍵右側位置並按空白鍵",
-                        u8"請移到 0 鍵下方位置並按空白鍵",
-                    };
-                    status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
-                    if(calibration_points.size() < 3U) {
-                        status += std::string(u8"；接著") + next_instructions[calibration_points.size() - 1U];
-                    }
-                    else {
-                        status += u8"；請按 Enter 完成校正";
-                    }
+                    calibration_collector.clear();
+                    collecting_calibration_samples = true;
+                    status = current_xyz.has_value() ? u8"開始收集校正樣本，請保持手指不動"
+                                                     : u8"等待有效指尖深度後開始收集，請保持手指不動";
                 }
             }
             else if(key == 13 && calibrating) {
-                if(calibration_points.size() != 3U) {
+                if(collecting_calibration_samples) {
+                    status = u8"校正點仍在取樣，請保持手指不動";
+                }
+                else if(calibration_points.size() != 3U) {
                     status = u8"請先依序記錄 1 鍵左上角、3 鍵右側位置與 0 鍵下方位置";
                 }
                 else {
@@ -358,15 +522,27 @@ int main(int argc, char** argv) {
                         status = u8"校正完成";
                     }
                     else {
-                        status = u8"校正失敗：三個位置距離太近或幾乎位於同一直線";
+                        calibration_points.clear();
+                        calibration_spreads.clear();
+                        calibration_collector.clear();
+                        status = u8"校正失敗：三個位置太近或接近直線；請從 1 鍵左上角重新取樣";
                     }
                 }
             }
             else if(key == 'r' || key == 'R') {
                 calibrating = false;
                 calibration_points.clear();
+                calibration_spreads.clear();
+                calibration_collector.clear();
+                collecting_calibration_samples = false;
                 plane.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
+                fingertip_stabilizer.reset();
+                depth_stabilizer.reset();
+                raw_depth_freshness.reset();
+                camera.reset_depth_filters();
+                sticky_key.reset();
+                active_pressed_key.reset();
                 status = u8"重設完成；按 C 重新設定數字鍵盤範圍";
             }
         }

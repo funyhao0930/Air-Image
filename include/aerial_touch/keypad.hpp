@@ -13,6 +13,7 @@ struct KeypadConfig {
     float key_height_mm{ 30.0F };
     float horizontal_gap_mm{ 5.0F };
     float vertical_gap_mm{ 5.0F };
+    float boundary_hysteresis_mm{ 2.0F };
 };
 
 struct KeyRegion {
@@ -28,6 +29,9 @@ public:
     explicit Keypad(KeypadConfig config);
 
     std::optional<std::string> key_at(Vec2 uv_mm) const;
+    std::optional<std::string> key_at(Vec2 uv_mm,
+                                      const std::optional<std::string>& previous_key,
+                                      float boundary_hysteresis_mm) const;
     const std::vector<KeyRegion>& regions() const;
 
 private:

@@ -23,21 +23,47 @@ T required_value(const YAML::Node& root, const char* section, const char* key) {
     return node.as<T>();
 }
 
+template<typename T>
+T optional_value(const YAML::Node& root, const char* section, const char* key, const T& fallback) {
+    const auto section_node = root[section];
+    if(!section_node) {
+        return fallback;
+    }
+    const auto node = section_node[key];
+    return node ? node.as<T>() : fallback;
+}
+
 }  // namespace
 
 void validate_app_config(const AppConfig& config) {
-    if(config.depth.sample_radius < 0 || !std::isfinite(config.touch.touch_threshold_mm)
+    if(config.camera.preferred_fps <= 0
+       || (config.camera.rgb_power_line_frequency_hz != 50 && config.camera.rgb_power_line_frequency_hz != 60)
+       || config.depth.sample_radius < 0 || config.depth.median_window_size == 0U
+       || config.depth.invalid_reset_frames == 0U || !std::isfinite(config.depth.max_jump_mm)
+       || config.depth.max_jump_mm <= 0.0F
+       || !std::isfinite(config.fingertip.min_cutoff_hz) || config.fingertip.min_cutoff_hz <= 0.0F
+       || !std::isfinite(config.fingertip.beta) || config.fingertip.beta < 0.0F
+       || !std::isfinite(config.fingertip.derivative_cutoff_hz)
+       || config.fingertip.derivative_cutoff_hz <= 0.0F || config.fingertip.display_hold_ms < 0
+       || !std::isfinite(config.touch.touch_threshold_mm)
        || !std::isfinite(config.touch.release_threshold_mm)
        || !std::isfinite(config.touch.min_approach_velocity_mm_s)
        || !std::isfinite(config.keypad.key_width_mm) || !std::isfinite(config.keypad.key_height_mm)
        || !std::isfinite(config.keypad.horizontal_gap_mm) || !std::isfinite(config.keypad.vertical_gap_mm)
+       || !std::isfinite(config.keypad.boundary_hysteresis_mm)
        || !std::isfinite(config.calibration.minimum_point_distance_mm)
+       || config.calibration.required_samples < 15U || config.calibration.required_samples > 20U
+       || !std::isfinite(config.calibration.mad_multiplier)
+       || !std::isfinite(config.calibration.minimum_outlier_threshold_mm)
        || config.touch.touch_threshold_mm < 0.0F
        || config.touch.release_threshold_mm <= config.touch.touch_threshold_mm
        || config.touch.min_approach_velocity_mm_s < 0.0F || config.touch.tracking_timeout_ms <= 0
        || config.keypad.key_width_mm <= 0.0F || config.keypad.key_height_mm <= 0.0F
        || config.keypad.horizontal_gap_mm < 0.0F || config.keypad.vertical_gap_mm < 0.0F
-       || config.calibration.minimum_point_distance_mm <= 0.0F) {
+       || config.keypad.boundary_hysteresis_mm < 0.0F
+       || config.calibration.minimum_point_distance_mm <= 0.0F
+       || config.calibration.mad_multiplier <= 0.0F
+       || config.calibration.minimum_outlier_threshold_mm <= 0.0F) {
         throw std::runtime_error(u8"設定包含無效的幾何尺寸或臨界值");
     }
 }
@@ -46,7 +72,34 @@ AppConfig load_app_config(const std::filesystem::path& path) {
     const YAML::Node root = YAML::LoadFile(path.string());
 
     AppConfig config;
+    config.camera.depth_work_mode =
+        optional_value<std::string>(root, "camera", "depth_work_mode", config.camera.depth_work_mode);
+    config.camera.depth_precision =
+        optional_value<std::string>(root, "camera", "depth_precision", config.camera.depth_precision);
+    config.camera.preferred_fps = optional_value<int>(root, "camera", "preferred_fps", config.camera.preferred_fps);
+    config.camera.sdk_temporal_filter =
+        optional_value<bool>(root, "camera", "sdk_temporal_filter", config.camera.sdk_temporal_filter);
+    config.camera.sdk_spatial_filter =
+        optional_value<bool>(root, "camera", "sdk_spatial_filter", config.camera.sdk_spatial_filter);
+    config.camera.hole_filling_filter =
+        optional_value<bool>(root, "camera", "hole_filling_filter", config.camera.hole_filling_filter);
+    config.camera.rgb_power_line_frequency_hz =
+        optional_value<int>(root, "camera", "rgb_power_line_frequency_hz",
+                            config.camera.rgb_power_line_frequency_hz);
     config.depth.sample_radius = required_value<int>(root, "depth", "sample_radius");
+    config.depth.median_window_size =
+        optional_value<std::size_t>(root, "depth", "median_window_size", config.depth.median_window_size);
+    config.depth.max_jump_mm = optional_value<float>(root, "depth", "max_jump_mm", config.depth.max_jump_mm);
+    config.depth.invalid_reset_frames =
+        optional_value<std::size_t>(root, "depth", "invalid_reset_frames", config.depth.invalid_reset_frames);
+    config.fingertip.min_cutoff_hz =
+        optional_value<float>(root, "fingertip", "min_cutoff_hz", config.fingertip.min_cutoff_hz);
+    config.fingertip.beta = optional_value<float>(root, "fingertip", "beta", config.fingertip.beta);
+    config.fingertip.derivative_cutoff_hz =
+        optional_value<float>(root, "fingertip", "derivative_cutoff_hz",
+                              config.fingertip.derivative_cutoff_hz);
+    config.fingertip.display_hold_ms =
+        optional_value<std::int64_t>(root, "fingertip", "display_hold_ms", config.fingertip.display_hold_ms);
     config.touch.touch_threshold_mm = required_value<float>(root, "touch", "touch_threshold_mm");
     config.touch.release_threshold_mm = required_value<float>(root, "touch", "release_threshold_mm");
     config.touch.min_approach_velocity_mm_s =
@@ -56,8 +109,17 @@ AppConfig load_app_config(const std::filesystem::path& path) {
     config.keypad.key_height_mm = required_value<float>(root, "keypad", "key_height_mm");
     config.keypad.horizontal_gap_mm = required_value<float>(root, "keypad", "horizontal_gap_mm");
     config.keypad.vertical_gap_mm = required_value<float>(root, "keypad", "vertical_gap_mm");
+    config.keypad.boundary_hysteresis_mm =
+        optional_value<float>(root, "keypad", "boundary_hysteresis_mm", config.keypad.boundary_hysteresis_mm);
     config.calibration.minimum_point_distance_mm =
         required_value<float>(root, "calibration", "minimum_point_distance_mm");
+    config.calibration.required_samples =
+        optional_value<std::size_t>(root, "calibration", "required_samples", config.calibration.required_samples);
+    config.calibration.mad_multiplier =
+        optional_value<float>(root, "calibration", "mad_multiplier", config.calibration.mad_multiplier);
+    config.calibration.minimum_outlier_threshold_mm =
+        optional_value<float>(root, "calibration", "minimum_outlier_threshold_mm",
+                              config.calibration.minimum_outlier_threshold_mm);
 
     validate_app_config(config);
     return config;
@@ -71,8 +133,27 @@ void save_app_config(const AppConfig& config, const std::filesystem::path& path)
 
     YAML::Emitter emitter;
     emitter << YAML::BeginMap;
+    emitter << YAML::Key << "camera" << YAML::Value << YAML::BeginMap;
+    emitter << YAML::Key << "depth_work_mode" << YAML::Value << config.camera.depth_work_mode;
+    emitter << YAML::Key << "depth_precision" << YAML::Value << config.camera.depth_precision;
+    emitter << YAML::Key << "preferred_fps" << YAML::Value << config.camera.preferred_fps;
+    emitter << YAML::Key << "sdk_temporal_filter" << YAML::Value << config.camera.sdk_temporal_filter;
+    emitter << YAML::Key << "sdk_spatial_filter" << YAML::Value << config.camera.sdk_spatial_filter;
+    emitter << YAML::Key << "hole_filling_filter" << YAML::Value << config.camera.hole_filling_filter;
+    emitter << YAML::Key << "rgb_power_line_frequency_hz" << YAML::Value
+            << config.camera.rgb_power_line_frequency_hz;
+    emitter << YAML::EndMap;
     emitter << YAML::Key << "depth" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "sample_radius" << YAML::Value << config.depth.sample_radius;
+    emitter << YAML::Key << "median_window_size" << YAML::Value << config.depth.median_window_size;
+    emitter << YAML::Key << "max_jump_mm" << YAML::Value << config.depth.max_jump_mm;
+    emitter << YAML::Key << "invalid_reset_frames" << YAML::Value << config.depth.invalid_reset_frames;
+    emitter << YAML::EndMap;
+    emitter << YAML::Key << "fingertip" << YAML::Value << YAML::BeginMap;
+    emitter << YAML::Key << "min_cutoff_hz" << YAML::Value << config.fingertip.min_cutoff_hz;
+    emitter << YAML::Key << "beta" << YAML::Value << config.fingertip.beta;
+    emitter << YAML::Key << "derivative_cutoff_hz" << YAML::Value << config.fingertip.derivative_cutoff_hz;
+    emitter << YAML::Key << "display_hold_ms" << YAML::Value << config.fingertip.display_hold_ms;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "touch" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "touch_threshold_mm" << YAML::Value << config.touch.touch_threshold_mm;
@@ -85,10 +166,15 @@ void save_app_config(const AppConfig& config, const std::filesystem::path& path)
     emitter << YAML::Key << "key_height_mm" << YAML::Value << config.keypad.key_height_mm;
     emitter << YAML::Key << "horizontal_gap_mm" << YAML::Value << config.keypad.horizontal_gap_mm;
     emitter << YAML::Key << "vertical_gap_mm" << YAML::Value << config.keypad.vertical_gap_mm;
+    emitter << YAML::Key << "boundary_hysteresis_mm" << YAML::Value << config.keypad.boundary_hysteresis_mm;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "calibration" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "minimum_point_distance_mm" << YAML::Value
             << config.calibration.minimum_point_distance_mm;
+    emitter << YAML::Key << "required_samples" << YAML::Value << config.calibration.required_samples;
+    emitter << YAML::Key << "mad_multiplier" << YAML::Value << config.calibration.mad_multiplier;
+    emitter << YAML::Key << "minimum_outlier_threshold_mm" << YAML::Value
+            << config.calibration.minimum_outlier_threshold_mm;
     emitter << YAML::EndMap;
     emitter << YAML::EndMap;
 
