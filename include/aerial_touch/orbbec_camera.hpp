@@ -23,6 +23,7 @@ struct CameraRuntimeInfo {
     bool temporal_filter{ false };
     bool spatial_filter{ false };
     bool hole_filling_filter{ false };
+    CameraCapabilities capabilities;
     std::vector<std::string> warnings;
 };
 

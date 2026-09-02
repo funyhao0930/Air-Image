@@ -57,7 +57,8 @@ public:
     SettingsWindow(const SettingsWindow&) = delete;
     SettingsWindow& operator=(const SettingsWindow&) = delete;
 
-    bool create(const AppConfig& config, std::filesystem::path config_path, ApplyCallback apply_callback);
+    bool create(const AppConfig& config, CameraCapabilities camera_capabilities,
+                std::filesystem::path config_path, ApplyCallback apply_callback);
     void show();
     void hide();
     bool visible() const;

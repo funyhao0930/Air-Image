@@ -19,8 +19,16 @@ struct ProfilePair {
     std::shared_ptr<ob::StreamProfile> depth;
 };
 
+template<typename T>
+void append_unique(std::vector<T>& values, T value) {
+    if(std::find(values.begin(), values.end(), value) == values.end()) {
+        values.push_back(std::move(value));
+    }
+}
+
 std::optional<ProfilePair> hardware_profile_pair(const std::shared_ptr<ob::Pipeline>& pipeline,
-                                                 const int preferred_fps) {
+                                                 const int preferred_fps,
+                                                 std::vector<int>* supported_fps = nullptr) {
     const auto color_profiles = pipeline->getStreamProfileList(OB_SENSOR_COLOR);
     std::vector<ProfilePair> pairs;
     std::vector<CameraProfileOption> options;
@@ -47,12 +55,16 @@ std::optional<ProfilePair> hardware_profile_pair(const std::shared_ptr<ob::Pipel
                                 static_cast<int>(depth_video->getFps()), true });
         }
     }
+    if(supported_fps != nullptr) {
+        *supported_fps = supported_camera_fps(options);
+    }
     const auto selected = select_camera_profile_option(preferred_fps, options);
     return selected.has_value() ? std::optional<ProfilePair>{ pairs[*selected] } : std::nullopt;
 }
 
 std::optional<ProfilePair> software_profile_pair(const std::shared_ptr<ob::Pipeline>& pipeline,
-                                                 const int preferred_fps) {
+                                                 const int preferred_fps,
+                                                 std::vector<int>* supported_fps = nullptr) {
     const auto color_profiles = pipeline->getStreamProfileList(OB_SENSOR_COLOR);
     const auto depth_profiles = pipeline->getStreamProfileList(OB_SENSOR_DEPTH);
     std::vector<ProfilePair> pairs;
@@ -69,6 +81,9 @@ std::optional<ProfilePair> software_profile_pair(const std::shared_ptr<ob::Pipel
                                 static_cast<int>(depth_video->getFps()),
                                 color_video->getFormat() == OB_FORMAT_RGB });
         }
+    }
+    if(supported_fps != nullptr) {
+        *supported_fps = supported_camera_fps(options);
     }
     const auto selected = select_camera_profile_option(preferred_fps, options);
     return selected.has_value() ? std::optional<ProfilePair>{ pairs[*selected] } : std::nullopt;
@@ -114,6 +129,50 @@ std::optional<OBDepthPrecisionLevel> parse_depth_precision(const std::string& va
 std::string depth_precision_name(const int value) {
     static const std::array<const char*, 7> names{ "1mm", "0.8mm", "0.4mm", "0.1mm", "0.2mm", "0.5mm", "0.05mm" };
     return value >= 0 && value < static_cast<int>(names.size()) ? names[static_cast<std::size_t>(value)] : u8"未知";
+}
+
+std::vector<int> supported_depth_precision_values(const std::shared_ptr<ob::Device>& device) {
+    std::vector<int> supported;
+    if(device->isPropertySupported(OB_STRUCT_DEPTH_PRECISION_SUPPORT_LIST, OB_PERMISSION_READ)) {
+        std::array<std::uint16_t, OB_PRECISION_COUNT> values{};
+        std::uint32_t bytes = static_cast<std::uint32_t>(sizeof(values));
+        device->getStructuredData(OB_STRUCT_DEPTH_PRECISION_SUPPORT_LIST,
+                                  reinterpret_cast<std::uint8_t*>(values.data()), &bytes);
+        if(bytes <= sizeof(values) && bytes % sizeof(std::uint16_t) == 0U) {
+            for(std::size_t index = 0; index < bytes / sizeof(std::uint16_t); ++index) {
+                const int value = static_cast<int>(values[index]);
+                if(value >= 0 && value < OB_PRECISION_COUNT) {
+                    append_unique(supported, value);
+                }
+            }
+        }
+    }
+    if(supported.empty() && device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_READ)) {
+        const auto range = device->getIntPropertyRange(OB_PROP_DEPTH_PRECISION_LEVEL_INT);
+        for(int value = range.min; value <= range.max; value += std::max(1, range.step)) {
+            if(value >= 0 && value < OB_PRECISION_COUNT) {
+                append_unique(supported, value);
+            }
+        }
+    }
+    return supported;
+}
+
+std::vector<int> supported_power_line_frequencies_hz(const std::shared_ptr<ob::Device>& device) {
+    std::vector<int> supported;
+    if(!device->isPropertySupported(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, OB_PERMISSION_WRITE)) {
+        return supported;
+    }
+    const auto range = device->getIntPropertyRange(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT);
+    for(int value = range.min; value <= range.max; value += std::max(1, range.step)) {
+        if(value == OB_POWER_LINE_FREQ_MODE_50HZ) {
+            append_unique(supported, 50);
+        }
+        else if(value == OB_POWER_LINE_FREQ_MODE_60HZ) {
+            append_unique(supported, 60);
+        }
+    }
+    return supported;
 }
 
 void add_warning(CameraRuntimeInfo& info, std::string warning) {
@@ -162,16 +221,23 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
     try {
         impl_->pipeline = std::make_shared<ob::Pipeline>();
         auto device = impl_->pipeline->getDevice();
+        auto& capabilities = impl_->runtime_info.capabilities;
+
+        try {
+            const auto modes = device->getDepthWorkModeList();
+            capabilities.depth_work_modes.reserve(modes->getCount());
+            for(std::uint32_t index = 0; index < modes->getCount(); ++index) {
+                append_unique(capabilities.depth_work_modes, std::string((*modes)[index].name));
+            }
+        }
+        catch(const ob::Error& error) {
+            add_warning(impl_->runtime_info, std::string(u8"無法查詢深度工作模式清單：") + describe_error(error));
+        }
 
         if(!requested.depth_work_mode.empty()) {
             try {
-                const auto modes = device->getDepthWorkModeList();
-                std::vector<std::string> supported_modes;
-                supported_modes.reserve(modes->getCount());
-                for(std::uint32_t index = 0; index < modes->getCount(); ++index) {
-                    supported_modes.emplace_back((*modes)[index].name);
-                }
-                const auto selected_mode = select_supported_setting(requested.depth_work_mode, supported_modes);
+                const auto selected_mode = select_supported_setting(requested.depth_work_mode,
+                                                                    capabilities.depth_work_modes);
                 if(selected_mode.has_value() && *selected_mode != device->getCurrentDepthModeName()) {
                     if(device->switchDepthWorkMode(selected_mode->c_str()) == OB_STATUS_OK) {
                         impl_->pipeline.reset();
@@ -194,9 +260,35 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
         }
         try {
             impl_->runtime_info.depth_work_mode = device->getCurrentDepthModeName();
+            capabilities.current_depth_work_mode = impl_->runtime_info.depth_work_mode;
+            append_unique(capabilities.depth_work_modes, impl_->runtime_info.depth_work_mode);
         }
         catch(const ob::Error&) {
             add_warning(impl_->runtime_info, u8"裝置未提供目前深度工作模式");
+        }
+
+        std::vector<int> supported_precisions;
+        std::optional<int> current_precision;
+        try {
+            supported_precisions = supported_depth_precision_values(device);
+            if(device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_READ)) {
+                current_precision = device->getIntProperty(OB_PROP_DEPTH_PRECISION_LEVEL_INT);
+            }
+            if(!device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_WRITE)) {
+                supported_precisions.clear();
+                if(current_precision.has_value()) {
+                    supported_precisions.push_back(*current_precision);
+                }
+            }
+            for(const int value : supported_precisions) {
+                const std::string name = depth_precision_name(value);
+                if(name != u8"未知") {
+                    append_unique(capabilities.depth_precisions, name);
+                }
+            }
+        }
+        catch(const ob::Error& error) {
+            add_warning(impl_->runtime_info, std::string(u8"無法查詢深度精度清單：") + describe_error(error));
         }
 
         const auto requested_precision = parse_depth_precision(requested.depth_precision);
@@ -206,27 +298,12 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
         }
         else {
             try {
-                std::vector<int> supported;
-                if(device->isPropertySupported(OB_STRUCT_DEPTH_PRECISION_SUPPORT_LIST, OB_PERMISSION_READ)) {
-                    std::array<std::uint16_t, OB_PRECISION_COUNT> values{};
-                    std::uint32_t bytes = static_cast<std::uint32_t>(sizeof(values));
-                    device->getStructuredData(OB_STRUCT_DEPTH_PRECISION_SUPPORT_LIST,
-                                              reinterpret_cast<std::uint8_t*>(values.data()), &bytes);
-                    if(bytes <= sizeof(values) && bytes % sizeof(std::uint16_t) == 0U) {
-                        for(std::size_t index = 0; index < bytes / sizeof(std::uint16_t); ++index) {
-                            supported.push_back(static_cast<int>(values[index]));
-                        }
-                    }
+                const auto selected = select_supported_setting(static_cast<int>(*requested_precision), supported_precisions);
+                if(selected.has_value() && current_precision.has_value() && *selected == *current_precision) {
+                    // Already active; no write is needed.
                 }
-                if(supported.empty() && device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_READ)) {
-                    const auto range = device->getIntPropertyRange(OB_PROP_DEPTH_PRECISION_LEVEL_INT);
-                    for(int value = range.min; value <= range.max; value += std::max(1, range.step)) {
-                        supported.push_back(value);
-                    }
-                }
-                const auto selected = select_supported_setting(static_cast<int>(*requested_precision), supported);
-                if(selected.has_value()
-                   && device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_WRITE)) {
+                else if(selected.has_value()
+                        && device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_WRITE)) {
                     device->setIntProperty(OB_PROP_DEPTH_PRECISION_LEVEL_INT, *selected);
                 }
                 else {
@@ -243,6 +320,10 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
             if(device->isPropertySupported(OB_PROP_DEPTH_PRECISION_LEVEL_INT, OB_PERMISSION_READ)) {
                 impl_->runtime_info.depth_precision =
                     depth_precision_name(device->getIntProperty(OB_PROP_DEPTH_PRECISION_LEVEL_INT));
+                capabilities.current_depth_precision = impl_->runtime_info.depth_precision;
+                if(impl_->runtime_info.depth_precision != u8"未知") {
+                    append_unique(capabilities.depth_precisions, impl_->runtime_info.depth_precision);
+                }
             }
         }
         catch(const ob::Error&) {
@@ -250,25 +331,19 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
         }
 
         try {
-            const int frequency = requested.rgb_power_line_frequency_hz == 50
-                                      ? OB_POWER_LINE_FREQ_MODE_50HZ
-                                      : OB_POWER_LINE_FREQ_MODE_60HZ;
-            if(device->isPropertySupported(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, OB_PERMISSION_WRITE)) {
-                const auto range = device->getIntPropertyRange(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT);
-                std::vector<int> supported_frequencies;
-                for(int value = range.min; value <= range.max; value += std::max(1, range.step)) {
-                    supported_frequencies.push_back(value);
-                }
-                const auto selected_frequency = select_supported_setting(frequency, supported_frequencies);
-                if(selected_frequency.has_value()) {
-                    device->setIntProperty(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, *selected_frequency);
-                }
-                else {
-                    add_warning(impl_->runtime_info, u8"裝置不支援指定的 RGB 防閃爍頻率");
-                }
+            capabilities.rgb_power_line_frequencies_hz = supported_power_line_frequencies_hz(device);
+            const auto selected_frequency = select_supported_setting(requested.rgb_power_line_frequency_hz,
+                                                                     capabilities.rgb_power_line_frequencies_hz);
+            if(selected_frequency.has_value()) {
+                const int frequency = *selected_frequency == 50 ? OB_POWER_LINE_FREQ_MODE_50HZ
+                                                                 : OB_POWER_LINE_FREQ_MODE_60HZ;
+                device->setIntProperty(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, frequency);
+            }
+            else if(capabilities.rgb_power_line_frequencies_hz.empty()) {
+                add_warning(impl_->runtime_info, u8"裝置不支援設定 RGB 防閃爍頻率");
             }
             else {
-                add_warning(impl_->runtime_info, u8"裝置不支援設定 RGB 防閃爍頻率");
+                add_warning(impl_->runtime_info, u8"裝置不支援指定的 RGB 防閃爍頻率");
             }
         }
         catch(const ob::Error& error) {
@@ -277,12 +352,13 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
         }
 
         impl_->pipeline->enableFrameSync();
-        auto pair = hardware_profile_pair(impl_->pipeline, requested.preferred_fps);
+        std::vector<int> supported_fps;
+        auto pair = hardware_profile_pair(impl_->pipeline, requested.preferred_fps, &supported_fps);
         const auto alignment_mode = choose_alignment_mode(pair.has_value());
         impl_->hardware_alignment = alignment_mode == AlignmentMode::Hardware;
         impl_->runtime_info.hardware_alignment = impl_->hardware_alignment;
         if(alignment_mode == AlignmentMode::Software) {
-            pair = software_profile_pair(impl_->pipeline, requested.preferred_fps);
+            pair = software_profile_pair(impl_->pipeline, requested.preferred_fps, &supported_fps);
             if(!pair.has_value()) {
                 throw std::runtime_error(u8"找不到具有相同 FPS 的 RGB 與深度串流設定");
             }
@@ -290,6 +366,10 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
             impl_->software_aligner->setMatchTargetResolution(true);
         }
         record_profile(*pair, impl_->runtime_info);
+        capabilities.fps_values = std::move(supported_fps);
+        capabilities.current_fps = impl_->runtime_info.fps;
+        append_unique(capabilities.fps_values, impl_->runtime_info.fps);
+        std::sort(capabilities.fps_values.begin(), capabilities.fps_values.end());
         if(impl_->runtime_info.fps != requested.preferred_fps) {
             add_warning(impl_->runtime_info,
                         std::string(u8"找不到指定 FPS，改用 ") + std::to_string(impl_->runtime_info.fps));
@@ -304,39 +384,44 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
             add_warning(impl_->runtime_info, std::string(u8"無法查詢裝置建議的深度濾波器：")
                                                   + describe_error(error));
         }
-        bool temporal_found = false;
-        bool spatial_found = false;
-        bool hole_filling_found = false;
+        bool temporal_available = false;
+        bool spatial_available = false;
+        bool hole_filling_available = false;
         std::shared_ptr<ob::Filter> temporal_filter;
         std::shared_ptr<ob::Filter> spatial_filter;
         std::shared_ptr<ob::Filter> hole_filling_filter;
         for(const auto& filter : recommended_filters) {
             try {
-                if(requested.sdk_temporal_filter && !temporal_found && filter->is<ob::TemporalFilter>()) {
-                    const auto temporal = filter->as<ob::TemporalFilter>();
-                    temporal->setDiffScale(0.1F);
-                    temporal->setWeight(0.4F);
-                    temporal->enable(true);
-                    temporal_filter = temporal;
-                    temporal_found = true;
+                if(!temporal_available && filter->is<ob::TemporalFilter>()) {
+                    temporal_available = true;
+                    if(requested.sdk_temporal_filter) {
+                        const auto temporal = filter->as<ob::TemporalFilter>();
+                        temporal->setDiffScale(0.1F);
+                        temporal->setWeight(0.4F);
+                        temporal->enable(true);
+                        temporal_filter = temporal;
+                    }
                 }
-                else if(requested.sdk_spatial_filter && !spatial_found && filter->is<ob::SpatialAdvancedFilter>()) {
-                    const auto spatial = filter->as<ob::SpatialAdvancedFilter>();
-                    auto parameters = spatial->getFilterParams();
-                    parameters.alpha = 0.5F;
-                    parameters.disp_diff = 160U;
-                    parameters.magnitude = 1U;
-                    parameters.radius = 1U;
-                    spatial->setFilterParams(parameters);
-                    spatial->enable(true);
-                    spatial_filter = spatial;
-                    spatial_found = true;
+                else if(!spatial_available && filter->is<ob::SpatialAdvancedFilter>()) {
+                    spatial_available = true;
+                    if(requested.sdk_spatial_filter) {
+                        const auto spatial = filter->as<ob::SpatialAdvancedFilter>();
+                        auto parameters = spatial->getFilterParams();
+                        parameters.alpha = 0.5F;
+                        parameters.disp_diff = 160U;
+                        parameters.magnitude = 1U;
+                        parameters.radius = 1U;
+                        spatial->setFilterParams(parameters);
+                        spatial->enable(true);
+                        spatial_filter = spatial;
+                    }
                 }
-                else if(requested.hole_filling_filter && !hole_filling_found
-                        && filter->is<ob::HoleFillingFilter>()) {
-                    filter->enable(true);
-                    hole_filling_filter = filter;
-                    hole_filling_found = true;
+                else if(!hole_filling_available && filter->is<ob::HoleFillingFilter>()) {
+                    hole_filling_available = true;
+                    if(requested.hole_filling_filter) {
+                        filter->enable(true);
+                        hole_filling_filter = filter;
+                    }
                 }
             }
             catch(const ob::Error& error) {
@@ -344,7 +429,11 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
                                                       + describe_error(error));
             }
         }
-        for(const auto kind : depth_filter_plan(requested, temporal_found, spatial_found, hole_filling_found)) {
+        capabilities.temporal_filter_available = temporal_available;
+        capabilities.spatial_filter_available = spatial_available;
+        capabilities.hole_filling_filter_available = hole_filling_available;
+        for(const auto kind : depth_filter_plan(requested, temporal_filter != nullptr, spatial_filter != nullptr,
+                                                hole_filling_filter != nullptr)) {
             switch(kind) {
             case DepthFilterKind::Temporal:
                 impl_->depth_filters.push_back({ kind, temporal_filter });
@@ -357,16 +446,16 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
                 break;
             }
         }
-        impl_->runtime_info.temporal_filter = temporal_found;
-        impl_->runtime_info.spatial_filter = spatial_found;
-        impl_->runtime_info.hole_filling_filter = hole_filling_found;
-        if(requested.sdk_temporal_filter && !temporal_found) {
+        impl_->runtime_info.temporal_filter = requested.sdk_temporal_filter && temporal_filter != nullptr;
+        impl_->runtime_info.spatial_filter = requested.sdk_spatial_filter && spatial_filter != nullptr;
+        impl_->runtime_info.hole_filling_filter = requested.hole_filling_filter && hole_filling_filter != nullptr;
+        if(requested.sdk_temporal_filter && !temporal_available) {
             add_warning(impl_->runtime_info, u8"裝置未提供 SDK 時間濾波器，已安全停用");
         }
-        if(requested.sdk_spatial_filter && !spatial_found) {
+        if(requested.sdk_spatial_filter && !spatial_available) {
             add_warning(impl_->runtime_info, u8"裝置未提供 SDK 空間濾波器，已安全停用");
         }
-        if(requested.hole_filling_filter && !hole_filling_found) {
+        if(requested.hole_filling_filter && !hole_filling_available) {
             add_warning(impl_->runtime_info, u8"裝置未提供孔洞填補濾波器，已安全停用");
         }
 

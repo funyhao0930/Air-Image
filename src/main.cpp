@@ -192,6 +192,26 @@ int main(int argc, char** argv) {
                   << u8"；深度模式=" << camera_info.depth_work_mode
                   << u8"；深度精度=" << camera_info.depth_precision
                   << u8"；FPS=" << camera_info.fps << '\n';
+        std::cout << u8"Gemini 2 可用設定：模式=";
+        for(const auto& mode : camera_info.capabilities.depth_work_modes) {
+            std::cout << '[' << mode << "] ";
+        }
+        std::cout << u8"；精度=";
+        for(const auto& precision : camera_info.capabilities.depth_precisions) {
+            std::cout << '[' << precision << "] ";
+        }
+        std::cout << u8"；FPS=";
+        for(const int value : camera_info.capabilities.fps_values) {
+            std::cout << '[' << value << "] ";
+        }
+        std::cout << u8"；RGB 防閃爍=";
+        for(const int value : camera_info.capabilities.rgb_power_line_frequencies_hz) {
+            std::cout << '[' << value << " Hz] ";
+        }
+        std::cout << u8"；SDK 濾波器="
+                  << (camera_info.capabilities.temporal_filter_available ? u8"Temporal " : "")
+                  << (camera_info.capabilities.spatial_filter_available ? u8"Spatial " : "")
+                  << (camera_info.capabilities.hole_filling_filter_available ? u8"HoleFilling" : "") << '\n';
         for(const auto& warning : camera_info.warnings) {
             std::cerr << u8"相機設定警告：" << warning << '\n';
         }
@@ -206,7 +226,8 @@ int main(int argc, char** argv) {
 
         const auto toggle_settings_window = [&]() {
             if(!settings_window_created) {
-                settings_window_created = settings_window.create(config, options.config, apply_runtime_config);
+                settings_window_created = settings_window.create(config, camera_info.capabilities,
+                                                                 options.config, apply_runtime_config);
                 if(!settings_window_created) {
                     status = u8"參數設定視窗建立失敗";
                 }

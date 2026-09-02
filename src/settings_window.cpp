@@ -75,6 +75,7 @@ namespace aerial_touch {
 namespace {
 
 constexpr int kFieldCount = 10;
+constexpr int kCameraFieldCount = 3;
 constexpr int kFirstEditId = 1000;
 constexpr int kFirstSliderId = 1100;
 constexpr int kRestoreButtonId = 1201;
@@ -83,6 +84,7 @@ constexpr int kApplyButtonId = 1203;
 constexpr int kStatusId = 1300;
 constexpr int kPathId = 1301;
 constexpr int kFirstErrorId = 1400;
+constexpr int kFirstCameraControlId = 1500;
 
 struct FieldSpec {
     const wchar_t* label;
@@ -174,7 +176,10 @@ void set_field_value(AppConfig& config, const int index, const double value) {
 }
 
 bool configs_equal(const AppConfig& left, const AppConfig& right) {
-    return left.depth.sample_radius == right.depth.sample_radius
+    return left.camera.depth_work_mode == right.camera.depth_work_mode
+           && left.camera.depth_precision == right.camera.depth_precision
+           && left.camera.preferred_fps == right.camera.preferred_fps
+           && left.depth.sample_radius == right.depth.sample_radius
            && left.touch.touch_threshold_mm == right.touch.touch_threshold_mm
            && left.touch.release_threshold_mm == right.touch.release_threshold_mm
            && left.touch.min_approach_velocity_mm_s == right.touch.min_approach_velocity_mm_s
@@ -275,6 +280,7 @@ void set_window_text(const HWND window, const std::wstring& text) {
 struct SettingsWindow::Impl {
     HWND hwnd{};
     AppConfig applied_config{};
+    CameraCapabilities camera_capabilities{};
     std::filesystem::path config_path;
     ApplyCallback apply_callback;
     SettingsPreview preview{};
@@ -284,6 +290,9 @@ struct SettingsWindow::Impl {
     std::array<HWND, kFieldCount> sliders{};
     std::array<HWND, kFieldCount> units{};
     std::array<HWND, kFieldCount> errors{};
+    std::array<HWND, kCameraFieldCount> camera_labels{};
+    std::array<HWND, kCameraFieldCount> camera_controls{};
+    std::vector<std::string> camera_work_mode_values;
     HWND status{};
     HWND path_label{};
     HWND restore_button{};
@@ -359,6 +368,46 @@ struct SettingsWindow::Impl {
         }
     }
 
+    void create_camera_controls() {
+        constexpr std::array<const wchar_t*, kCameraFieldCount> labels{ L"深度工作模式", L"深度精度", L"相機 FPS" };
+        for(int index = 0; index < kCameraFieldCount; ++index) {
+            camera_labels[static_cast<std::size_t>(index)] =
+                create_control(L"STATIC", labels[static_cast<std::size_t>(index)], WS_CHILD | WS_VISIBLE | SS_LEFT,
+                               0, 0, 0, 0, 0);
+        }
+
+        const DWORD combo_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST;
+        camera_controls[0] = create_control(L"COMBOBOX", L"", combo_style, 0, 0, 0, 0, kFirstCameraControlId);
+        camera_controls[1] = create_control(L"COMBOBOX", L"", combo_style, 0, 0, 0, 0, kFirstCameraControlId + 1);
+        camera_controls[2] = create_control(L"COMBOBOX", L"", combo_style, 0, 0, 0, 0, kFirstCameraControlId + 2);
+
+        camera_work_mode_values.push_back({});
+        std::wstring current_mode = L"保持目前模式";
+        if(!camera_capabilities.current_depth_work_mode.empty()) {
+            current_mode += L"（" + utf8_to_wide(camera_capabilities.current_depth_work_mode) + L"）";
+        }
+        SendMessageW(camera_controls[0], CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(current_mode.c_str()));
+        for(const auto& value : camera_capabilities.depth_work_modes) {
+            if(value.empty()) {
+                continue;
+            }
+            camera_work_mode_values.push_back(value);
+            const auto wide = utf8_to_wide(value);
+            SendMessageW(camera_controls[0], CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+        }
+
+        for(const auto& value : camera_capabilities.depth_precisions) {
+            const auto wide = utf8_to_wide(value);
+            SendMessageW(camera_controls[1], CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+        }
+        for(const int value : camera_capabilities.fps_values) {
+            const auto wide = std::to_wstring(value);
+            SendMessageW(camera_controls[2], CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+        }
+        EnableWindow(camera_controls[1], camera_capabilities.depth_precisions.empty() ? FALSE : TRUE);
+        EnableWindow(camera_controls[2], camera_capabilities.fps_values.empty() ? FALSE : TRUE);
+    }
+
     void create_controls() {
         font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -373,6 +422,8 @@ struct SettingsWindow::Impl {
         set_font(path_label, small_font);
         status = create_control(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, kStatusId);
         set_font(status, small_font);
+
+        create_camera_controls();
 
         for(int index = 0; index < kFieldCount; ++index) {
             create_field(index);
@@ -423,20 +474,35 @@ struct SettingsWindow::Impl {
         move_control(errors[static_cast<std::size_t>(index)], slider_left, y + 35, error_width, std::max(18, row_height - 37));
     }
 
+    void layout_camera_field(const int index, const SettingsRect& group, const int y) {
+        const int inner_left = group.left + 15;
+        const int inner_right = group.right - 15;
+        const int label_width = 130;
+        move_control(camera_labels[static_cast<std::size_t>(index)], inner_left, y + 4, label_width, 22);
+        move_control(camera_controls[static_cast<std::size_t>(index)], inner_left + label_width + 7, y,
+                     std::max(100, inner_right - inner_left - label_width - 7), 150);
+    }
+
     void layout_controls() {
         RECT client{};
         GetClientRect(hwnd, &client);
         layout = calculate_settings_layout(client.right - client.left, client.bottom - client.top);
 
         const int touch_row_height = std::max(58, (layout.touch_group.bottom - layout.touch_group.top - 62) / 4);
-        const int depth_row_height = std::max(58, (layout.depth_group.bottom - layout.depth_group.top - 62) / 2);
         const int keypad_row_height = std::max(58, (layout.keypad_group.bottom - layout.keypad_group.top - 62) / 4);
 
         for(int index = 0; index < 4; ++index) {
             layout_field(index, layout.touch_group, layout.touch_group.top + 53 + index * touch_row_height, touch_row_height);
         }
-        layout_field(4, layout.depth_group, layout.depth_group.top + 53, depth_row_height);
-        layout_field(5, layout.depth_group, layout.depth_group.top + 53 + depth_row_height, depth_row_height);
+        constexpr int camera_row_height = 34;
+        const int camera_top = layout.depth_group.top + 50;
+        for(int index = 0; index < kCameraFieldCount; ++index) {
+            layout_camera_field(index, layout.depth_group, camera_top + index * camera_row_height);
+        }
+        const int depth_fields_top = camera_top + kCameraFieldCount * camera_row_height + 4;
+        const int depth_row_height = std::max(58, (layout.depth_group.bottom - depth_fields_top - 10) / 2);
+        layout_field(4, layout.depth_group, depth_fields_top, depth_row_height);
+        layout_field(5, layout.depth_group, depth_fields_top + depth_row_height, depth_row_height);
         for(int index = 6; index < kFieldCount; ++index) {
             layout_field(index, layout.keypad_group, layout.keypad_group.top + 53 + (index - 6) * keypad_row_height,
                          keypad_row_height);
@@ -471,8 +537,42 @@ struct SettingsWindow::Impl {
 
     COLORREF status_color{ kMuted };
 
+    static bool select_combo_value(const HWND combo, const std::wstring& value) {
+        const LRESULT index = SendMessageW(combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                                           reinterpret_cast<LPARAM>(value.c_str()));
+        if(index == CB_ERR) {
+            return false;
+        }
+        SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+        return true;
+    }
+
     void load_config_to_controls(const AppConfig& config) {
         syncing = true;
+        int mode_index = 0;
+        if(!config.camera.depth_work_mode.empty()) {
+            const auto found = std::find(camera_work_mode_values.begin(), camera_work_mode_values.end(),
+                                         config.camera.depth_work_mode);
+            if(found != camera_work_mode_values.end()) {
+                mode_index = static_cast<int>(std::distance(camera_work_mode_values.begin(), found));
+            }
+        }
+        SendMessageW(camera_controls[0], CB_SETCURSEL, static_cast<WPARAM>(mode_index), 0);
+
+        if(!camera_capabilities.depth_precisions.empty()
+           && !select_combo_value(camera_controls[1], utf8_to_wide(config.camera.depth_precision))) {
+            if(camera_capabilities.current_depth_precision.empty()
+               || !select_combo_value(camera_controls[1], utf8_to_wide(camera_capabilities.current_depth_precision))) {
+                SendMessageW(camera_controls[1], CB_SETCURSEL, 0, 0);
+            }
+        }
+        if(!camera_capabilities.fps_values.empty()
+           && !select_combo_value(camera_controls[2], std::to_wstring(config.camera.preferred_fps))) {
+            if(camera_capabilities.current_fps <= 0
+               || !select_combo_value(camera_controls[2], std::to_wstring(camera_capabilities.current_fps))) {
+                SendMessageW(camera_controls[2], CB_SETCURSEL, 0, 0);
+            }
+        }
         for(int index = 0; index < kFieldCount; ++index) {
             const auto& spec = field_specs()[static_cast<std::size_t>(index)];
             const double value = field_value(config, index);
@@ -486,6 +586,29 @@ struct SettingsWindow::Impl {
 
     bool read_candidate(AppConfig& candidate) {
         candidate = applied_config;
+        const LRESULT mode_index = SendMessageW(camera_controls[0], CB_GETCURSEL, 0, 0);
+        if(mode_index == CB_ERR || mode_index < 0
+           || static_cast<std::size_t>(mode_index) >= camera_work_mode_values.size()) {
+            return false;
+        }
+        candidate.camera.depth_work_mode = camera_work_mode_values[static_cast<std::size_t>(mode_index)];
+
+        if(!camera_capabilities.depth_precisions.empty()) {
+            const LRESULT precision_index = SendMessageW(camera_controls[1], CB_GETCURSEL, 0, 0);
+            if(precision_index == CB_ERR || precision_index < 0
+               || static_cast<std::size_t>(precision_index) >= camera_capabilities.depth_precisions.size()) {
+                return false;
+            }
+            candidate.camera.depth_precision = camera_capabilities.depth_precisions[static_cast<std::size_t>(precision_index)];
+        }
+        if(!camera_capabilities.fps_values.empty()) {
+            const LRESULT fps_index = SendMessageW(camera_controls[2], CB_GETCURSEL, 0, 0);
+            if(fps_index == CB_ERR || fps_index < 0
+               || static_cast<std::size_t>(fps_index) >= camera_capabilities.fps_values.size()) {
+                return false;
+            }
+            candidate.camera.preferred_fps = camera_capabilities.fps_values[static_cast<std::size_t>(fps_index)];
+        }
         bool valid = true;
         for(int index = 0; index < kFieldCount; ++index) {
             std::wstring error;
@@ -593,14 +716,17 @@ struct SettingsWindow::Impl {
             refresh_validation();
             return;
         }
+        const bool camera_changed = candidate.camera.depth_work_mode != applied_config.camera.depth_work_mode
+                                    || candidate.camera.depth_precision != applied_config.camera.depth_precision
+                                    || candidate.camera.preferred_fps != applied_config.camera.preferred_fps;
         std::string error;
         if(!apply_callback || !apply_callback(candidate, error)) {
             set_status(error.empty() ? L"套用設定失敗" : utf8_to_wide(error), kRed);
             return;
         }
         applied_config = candidate;
-        set_status(L"已套用並儲存", kCyan);
         refresh_validation();
+        set_status(camera_changed ? L"已儲存；相機設定重新啟動後生效" : L"已套用並儲存", kCyan);
     }
 
     void handle_cancel() {
@@ -740,7 +866,7 @@ struct SettingsWindow::Impl {
         TextOutW(canvas, 24, 38, title, static_cast<int>(wcslen(title)));
         SetTextColor(canvas, kMuted);
         SelectObject(canvas, small_font);
-        const wchar_t* description = L"調整感測、觸控與鍵盤幾何；按下套用後於目前執行中生效。";
+        const wchar_t* description = L"互動參數可即時套用；相機參數重新啟動後生效。";
         TextOutW(canvas, 155, 44, description, static_cast<int>(wcslen(description)));
 
         draw_group(canvas, to_rect(layout.touch_group), L"觸控判定", L"TOUCH LOGIC");
@@ -813,6 +939,11 @@ struct SettingsWindow::Impl {
             if(id >= kFirstEditId && id < kFirstEditId + kFieldCount && notification == EN_CHANGE
                && !self->syncing) {
                 self->sync_slider_from_edit(id - kFirstEditId);
+                self->refresh_validation();
+                return 0;
+            }
+            if(id >= kFirstCameraControlId && id < kFirstCameraControlId + kCameraFieldCount
+               && notification == CBN_SELCHANGE && !self->syncing) {
                 self->refresh_validation();
                 return 0;
             }
@@ -916,13 +1047,15 @@ SettingsWindow::~SettingsWindow() {
 #endif
 }
 
-bool SettingsWindow::create(const AppConfig& config, std::filesystem::path config_path, ApplyCallback apply_callback) {
+bool SettingsWindow::create(const AppConfig& config, CameraCapabilities camera_capabilities,
+                            std::filesystem::path config_path, ApplyCallback apply_callback) {
 #ifdef _WIN32
     if(impl_ != nullptr) {
         return impl_->hwnd != nullptr;
     }
     impl_ = new Impl;
     impl_->applied_config = config;
+    impl_->camera_capabilities = std::move(camera_capabilities);
     impl_->config_path = std::move(config_path);
     impl_->apply_callback = std::move(apply_callback);
     if(!impl_->create_window()) {
@@ -933,6 +1066,7 @@ bool SettingsWindow::create(const AppConfig& config, std::filesystem::path confi
     return true;
 #else
     static_cast<void>(config);
+    static_cast<void>(camera_capabilities);
     static_cast<void>(config_path);
     static_cast<void>(apply_callback);
     return false;
@@ -1006,7 +1140,7 @@ namespace aerial_touch {
 SettingsWindow::SettingsWindow() = default;
 SettingsWindow::~SettingsWindow() = default;
 
-bool SettingsWindow::create(const AppConfig&, std::filesystem::path, ApplyCallback) {
+bool SettingsWindow::create(const AppConfig&, CameraCapabilities, std::filesystem::path, ApplyCallback) {
     return false;
 }
 void SettingsWindow::show() {}

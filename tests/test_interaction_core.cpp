@@ -256,6 +256,17 @@ bool camera_profile_resolver_requires_matching_rgb_and_depth_fps() {
     return aerial_touch::select_camera_profile_option(60, options).value_or(99U) == 1U;
 }
 
+bool camera_capabilities_only_offer_usable_matching_fps() {
+    const std::vector<aerial_touch::CameraProfileOption> options{
+        { 0U, 60, 30, true },
+        { 1U, 30, 30, true },
+        { 2U, 60, 60, false },
+        { 3U, 15, 15, true },
+        { 4U, 30, 30, true },
+    };
+    return aerial_touch::supported_camera_fps(options) == std::vector<int>({ 15, 30 });
+}
+
 bool failed_depth_filter_is_skipped_without_losing_the_frame() {
     const auto stages = std::vector<aerial_touch::DepthFilterKind>{
         aerial_touch::DepthFilterKind::Temporal,
@@ -435,6 +446,7 @@ bool run_interaction_core_tests() {
            && unsupported_camera_settings_are_not_selected()
            && camera_fallback_and_filter_order_are_explicit()
            && camera_profile_resolver_requires_matching_rgb_and_depth_fps()
+           && camera_capabilities_only_offer_usable_matching_fps()
            && failed_depth_filter_is_skipped_without_losing_the_frame()
            && yaml_config_rejects_nonfinite_values() && app_config_validation_rejects_invalid_values()
            && legacy_yaml_uses_defaults_for_new_stabilization_fields()

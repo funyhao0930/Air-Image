@@ -20,6 +20,19 @@ struct CameraConfig {
     int rgb_power_line_frequency_hz{ 60 };
 };
 
+struct CameraCapabilities {
+    std::string current_depth_work_mode;
+    std::string current_depth_precision;
+    int current_fps{};
+    std::vector<std::string> depth_work_modes;
+    std::vector<std::string> depth_precisions;
+    std::vector<int> fps_values;
+    std::vector<int> rgb_power_line_frequencies_hz;
+    bool temporal_filter_available{ false };
+    bool spatial_filter_available{ false };
+    bool hole_filling_filter_available{ false };
+};
+
 enum class DepthFilterKind {
     Temporal,
     Spatial,
@@ -54,6 +67,20 @@ inline std::optional<std::size_t> select_camera_profile_option(
         }
     }
     return std::nullopt;
+}
+
+inline std::vector<int> supported_camera_fps(const std::vector<CameraProfileOption>& options) {
+    std::vector<int> values;
+    for(const auto& option : options) {
+        if(!option.color_is_rgb || option.color_fps != option.depth_fps || option.color_fps <= 0) {
+            continue;
+        }
+        if(std::find(values.begin(), values.end(), option.color_fps) == values.end()) {
+            values.push_back(option.color_fps);
+        }
+    }
+    std::sort(values.begin(), values.end());
+    return values;
 }
 
 inline std::vector<DepthFilterKind> depth_filter_plan(const CameraConfig& config,

@@ -7,6 +7,7 @@ set(USER_FACING_FILES
     "${SOURCE_DIR}/src/app_config.cpp"
     "${SOURCE_DIR}/src/hand_tracker.cpp"
     "${SOURCE_DIR}/src/orbbec_camera.cpp"
+    "${SOURCE_DIR}/src/settings_window.cpp"
     "${SOURCE_DIR}/tools/orbbec_stream_probe.cpp"
     "${SOURCE_DIR}/mediapipe_bridge/bridge.cc")
 
@@ -23,6 +24,10 @@ set(REQUIRED_ZH_TW_TEXT
     "請移到 0 鍵下方位置"
     "校正完成"
     "相機啟動失敗"
+    "深度工作模式"
+    "深度精度"
+    "相機 FPS"
+    "重新啟動後生效"
     "裝置數量："
     "探測失敗：")
 
