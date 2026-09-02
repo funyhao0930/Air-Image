@@ -74,7 +74,7 @@ namespace aerial_touch {
 
 namespace {
 
-constexpr int kFieldCount = 10;
+constexpr int kFieldCount = 6;
 constexpr int kCameraFieldCount = 3;
 constexpr int kFirstEditId = 1000;
 constexpr int kFirstSliderId = 1100;
@@ -102,11 +102,7 @@ const std::array<FieldSpec, kFieldCount>& field_specs() {
         { L"最低接近速度\r\n防止慢速誤觸", L"mm/s", 0.0, 500.0, 10.0, false },
         { L"追蹤逾時\r\n遺失手部後鎖定時間", L"ms", 50.0, 1000.0, 1.0, true },
         { L"深度取樣半徑\r\nROI 中位數範圍", L"px", 0.0, 8.0, 1.0, true },
-        { L"校正點最小距離\r\n避免三點太接近", L"mm", 20.0, 300.0, 10.0, false },
-        { L"按鍵寬度", L"mm", 10.0, 80.0, 10.0, false },
-        { L"按鍵高度", L"mm", 10.0, 80.0, 10.0, false },
-        { L"水平間距", L"mm", 0.0, 30.0, 10.0, false },
-        { L"垂直間距", L"mm", 0.0, 30.0, 10.0, false },
+        { L"校正點最小距離\r\n避免基準點太接近", L"mm", 20.0, 300.0, 10.0, false },
     } };
     return specs;
 }
@@ -125,14 +121,6 @@ double field_value(const AppConfig& config, const int index) {
         return static_cast<double>(config.depth.sample_radius);
     case 5:
         return config.calibration.minimum_point_distance_mm;
-    case 6:
-        return config.keypad.key_width_mm;
-    case 7:
-        return config.keypad.key_height_mm;
-    case 8:
-        return config.keypad.horizontal_gap_mm;
-    case 9:
-        return config.keypad.vertical_gap_mm;
     default:
         return 0.0;
     }
@@ -158,18 +146,6 @@ void set_field_value(AppConfig& config, const int index, const double value) {
     case 5:
         config.calibration.minimum_point_distance_mm = static_cast<float>(value);
         break;
-    case 6:
-        config.keypad.key_width_mm = static_cast<float>(value);
-        break;
-    case 7:
-        config.keypad.key_height_mm = static_cast<float>(value);
-        break;
-    case 8:
-        config.keypad.horizontal_gap_mm = static_cast<float>(value);
-        break;
-    case 9:
-        config.keypad.vertical_gap_mm = static_cast<float>(value);
-        break;
     default:
         break;
     }
@@ -184,10 +160,7 @@ bool configs_equal(const AppConfig& left, const AppConfig& right) {
            && left.touch.release_threshold_mm == right.touch.release_threshold_mm
            && left.touch.min_approach_velocity_mm_s == right.touch.min_approach_velocity_mm_s
            && left.touch.tracking_timeout_ms == right.touch.tracking_timeout_ms
-           && left.keypad.key_width_mm == right.keypad.key_width_mm
-           && left.keypad.key_height_mm == right.keypad.key_height_mm
-           && left.keypad.horizontal_gap_mm == right.keypad.horizontal_gap_mm
-           && left.keypad.vertical_gap_mm == right.keypad.vertical_gap_mm
+           && left.keypad.boundary_hysteresis_mm == right.keypad.boundary_hysteresis_mm
            && left.calibration.minimum_point_distance_mm == right.calibration.minimum_point_distance_mm;
 }
 
@@ -489,8 +462,6 @@ struct SettingsWindow::Impl {
         layout = calculate_settings_layout(client.right - client.left, client.bottom - client.top);
 
         const int touch_row_height = std::max(58, (layout.touch_group.bottom - layout.touch_group.top - 62) / 4);
-        const int keypad_row_height = std::max(58, (layout.keypad_group.bottom - layout.keypad_group.top - 62) / 4);
-
         for(int index = 0; index < 4; ++index) {
             layout_field(index, layout.touch_group, layout.touch_group.top + 53 + index * touch_row_height, touch_row_height);
         }
@@ -503,10 +474,6 @@ struct SettingsWindow::Impl {
         const int depth_row_height = std::max(58, (layout.depth_group.bottom - depth_fields_top - 10) / 2);
         layout_field(4, layout.depth_group, depth_fields_top, depth_row_height);
         layout_field(5, layout.depth_group, depth_fields_top + depth_row_height, depth_row_height);
-        for(int index = 6; index < kFieldCount; ++index) {
-            layout_field(index, layout.keypad_group, layout.keypad_group.top + 53 + (index - 6) * keypad_row_height,
-                         keypad_row_height);
-        }
 
         const int button_gap = 10;
         const int apply_width = 120;
@@ -652,18 +619,6 @@ struct SettingsWindow::Impl {
             }
             else if(candidate.calibration.minimum_point_distance_mm <= 0.0F) {
                 set_field_error(5, L"必須大於 0");
-            }
-            else if(candidate.keypad.key_width_mm <= 0.0F) {
-                set_field_error(6, L"必須大於 0");
-            }
-            else if(candidate.keypad.key_height_mm <= 0.0F) {
-                set_field_error(7, L"必須大於 0");
-            }
-            else if(candidate.keypad.horizontal_gap_mm < 0.0F) {
-                set_field_error(8, L"不可小於 0");
-            }
-            else if(candidate.keypad.vertical_gap_mm < 0.0F) {
-                set_field_error(9, L"不可小於 0");
             }
             else {
                 set_status(utf8_to_wide(error.what()), kRed);
@@ -873,6 +828,11 @@ struct SettingsWindow::Impl {
         draw_group(canvas, to_rect(layout.depth_group), L"深度與校正", L"DEPTH / CALIBRATION");
         draw_group(canvas, to_rect(layout.preview_group), L"觸控距離預覽", L"LIVE MODEL");
         draw_group(canvas, to_rect(layout.keypad_group), L"鍵盤幾何", L"KEYPAD GEOMETRY");
+        RECT geometry_hint{ layout.keypad_group.left + 15, layout.keypad_group.top + 58,
+                            layout.keypad_group.right - 15, layout.keypad_group.bottom - 15 };
+        SetTextColor(canvas, kMuted);
+        DrawTextW(canvas, L"鍵盤尺寸由 C 校正的 7 個邊界點自動取得。\r\n完成校正後才會啟用。",
+                  -1, &geometry_hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
         draw_preview(canvas);
         if(old_bitmap != nullptr) {
             BitBlt(dc, 0, 0, client.right, client.bottom, canvas, 0, 0, SRCCOPY);

@@ -1,4 +1,5 @@
 #include "aerial_touch/app_config.hpp"
+#include "aerial_touch/calibration_geometry.hpp"
 #include "aerial_touch/calibration_sampler.hpp"
 #include "aerial_touch/depth_sampler.hpp"
 #include "aerial_touch/hand_tracker.hpp"
@@ -103,13 +104,16 @@ void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {
 }
 
 void draw_keypad(cv::Mat& image,
-                 const aerial_touch::Keypad& keypad,
+                 const std::optional<aerial_touch::Keypad>& keypad,
                  const std::optional<std::string>& hovered_key,
                  const std::optional<std::string>& pressed_key) {
+    if(!keypad.has_value()) {
+        return;
+    }
     constexpr float scale = 1.1F;
     const int origin_x = std::max(0, image.cols - 150);
     const int origin_y = std::max(0, image.rows - 180);
-    for(const auto& region : keypad.regions()) {
+    for(const auto& region : keypad->regions()) {
         const cv::Rect rect{ origin_x + static_cast<int>(region.u_min_mm * scale),
                              origin_y + static_cast<int>(region.v_min_mm * scale),
                              std::max(1, static_cast<int>((region.u_max_mm - region.u_min_mm) * scale)),
@@ -135,7 +139,7 @@ int main(int argc, char** argv) {
     try {
         const CliOptions options = parse_options(argc, argv);
         auto config = aerial_touch::load_app_config(options.config);
-        aerial_touch::Keypad keypad(config.keypad);
+        std::optional<aerial_touch::Keypad> keypad;
         aerial_touch::TouchStateMachine touch(config.touch);
         aerial_touch::HandSignalStabilizer fingertip_stabilizer(
             { { config.fingertip.min_cutoff_hz, config.fingertip.beta, config.fingertip.derivative_cutoff_hz },
@@ -149,6 +153,7 @@ int main(int argc, char** argv) {
         aerial_touch::SettingsWindow settings_window;
         bool settings_window_created = false;
         std::optional<aerial_touch::Plane> plane;
+        std::optional<aerial_touch::Plane> calibration_plane;
         std::vector<aerial_touch::Vec3> calibration_points;
         std::vector<aerial_touch::Vec3> calibration_spreads;
         std::optional<aerial_touch::Vec3> current_xyz;
@@ -165,10 +170,8 @@ int main(int argc, char** argv) {
 
         const auto apply_runtime_config = [&](const aerial_touch::AppConfig& candidate, std::string& error) {
             try {
-                aerial_touch::Keypad candidate_keypad(candidate.keypad);
                 aerial_touch::save_app_config(candidate, options.config);
                 config = candidate;
-                keypad = std::move(candidate_keypad);
                 touch.set_config(config.touch);
                 sticky_key.reset();
                 active_pressed_key.reset();
@@ -369,19 +372,37 @@ int main(int argc, char** argv) {
                     calibration_spreads.push_back(sample_result->spread);
                     calibration_collector.clear();
                     collecting_calibration_samples = false;
-                    static constexpr std::array<const char*, 3> names{
-                        u8"1 鍵左上角", u8"3 鍵右側位置", u8"0 鍵下方位置",
+                    static constexpr std::array<const char*, 7> names{
+                        u8"1 鍵左上角", u8"3 鍵右上角", u8"0 鍵正下方",
+                        u8"1 鍵右上角", u8"2 鍵右上角", u8"1 鍵左下角", u8"4 鍵左下角",
                     };
-                    static constexpr std::array<const char*, 2> next_instructions{
-                        u8"請移到 3 鍵右側位置並按空白鍵開始取樣",
-                        u8"請移到 0 鍵下方位置並按空白鍵開始取樣",
+                    static constexpr std::array<const char*, 6> next_instructions{
+                        u8"請移到 3 鍵右上角並按空白鍵開始取樣",
+                        u8"請移到 0 鍵正下方並按空白鍵開始取樣",
+                        u8"請移到 1 鍵右上角並按空白鍵開始取樣",
+                        u8"請移到 2 鍵右上角並按空白鍵開始取樣",
+                        u8"請移到 1 鍵左下角並按空白鍵開始取樣",
+                        u8"請移到 4 鍵左下角並按空白鍵開始取樣",
                     };
                     status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
-                    if(calibration_points.size() < 3U) {
+                    if(calibration_points.size() == 3U) {
+                        calibration_plane = aerial_touch::Plane::from_calibration_points(
+                            calibration_points[0], calibration_points[1], calibration_points[2],
+                            config.calibration.minimum_point_distance_mm);
+                        if(!calibration_plane.has_value()) {
+                            calibration_points.clear();
+                            calibration_spreads.clear();
+                            status = u8"校正失敗：前三個位置太近或接近直線；請從 1 鍵左上角重新取樣";
+                        }
+                        else {
+                            status += std::string(u8"；平面基準已建立；") + next_instructions[2];
+                        }
+                    }
+                    else if(calibration_points.size() < 7U) {
                         status += std::string(u8"；") + next_instructions[calibration_points.size() - 1U];
                     }
                     else {
-                        status += u8"；請按 Enter 完成校正";
+                        status += u8"；請按 Enter 計算鍵盤尺寸並完成校正";
                     }
                 }
                 else if(calibration_collector.sample_count() >= 20U) {
@@ -391,13 +412,13 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if(current_xyz.has_value() && plane.has_value() && !calibrating && confirmed_tip) {
+            if(current_xyz.has_value() && plane.has_value() && keypad.has_value() && !calibrating && confirmed_tip) {
                 const auto projected = plane->project(*current_xyz);
                 if(std::isfinite(projected.u_mm) && std::isfinite(projected.v_mm)
                    && std::isfinite(projected.signed_distance_mm)) {
                     current_uv = aerial_touch::Vec2{ projected.u_mm, projected.v_mm };
                     current_distance = projected.signed_distance_mm;
-                    sticky_key = keypad.key_at(*current_uv, sticky_key, config.keypad.boundary_hysteresis_mm);
+                    sticky_key = keypad->key_at(*current_uv, sticky_key, config.keypad.boundary_hysteresis_mm);
                     current_key = sticky_key;
                 }
                 if(raw_xyz.has_value()) {
@@ -407,7 +428,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if(current_xyz.has_value() && current_uv.has_value() && current_distance.has_value()
+            if(current_xyz.has_value() && keypad.has_value() && current_uv.has_value() && current_distance.has_value()
                && !calibrating && confirmed_tip) {
                 const auto event = touch.update({ frame->timestamp_ms, *current_distance, current_key,
                                                   *current_xyz, *current_uv });
@@ -475,7 +496,7 @@ int main(int argc, char** argv) {
                 text_line(canvas, std::string(u8"觸控：") + (touch.armed() ? u8"可觸發" : u8"等待手指離開"), 6);
                 text_line(canvas,
                           std::string(u8"校正：") + (calibrating ? u8"進行中 " : (plane ? u8"完成 " : u8"尚未設定 "))
-                              + std::to_string(calibration_points.size()) + "/3",
+                              + std::to_string(calibration_points.size()) + "/7",
                           7);
                 text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
                 text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：開始取樣 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
@@ -511,6 +532,8 @@ int main(int argc, char** argv) {
                 calibration_collector.clear();
                 collecting_calibration_samples = false;
                 plane.reset();
+                calibration_plane.reset();
+                keypad.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
                 sticky_key.reset();
                 active_pressed_key.reset();
@@ -520,7 +543,7 @@ int main(int argc, char** argv) {
                 if(collecting_calibration_samples) {
                     status = u8"校正點正在取樣，請保持手指不動";
                 }
-                else if(calibration_points.size() < 3U) {
+                else if(calibration_points.size() < 7U) {
                     calibration_collector.clear();
                     collecting_calibration_samples = true;
                     status = current_xyz.has_value() ? u8"開始收集校正樣本，請保持手指不動"
@@ -531,22 +554,36 @@ int main(int argc, char** argv) {
                 if(collecting_calibration_samples) {
                     status = u8"校正點仍在取樣，請保持手指不動";
                 }
-                else if(calibration_points.size() != 3U) {
-                    status = u8"請先依序記錄 1 鍵左上角、3 鍵右側位置與 0 鍵下方位置";
+                else if(calibration_points.size() != 7U || !calibration_plane.has_value()) {
+                    status = u8"請先依序記錄 7 個鍵盤邊界校正點";
                 }
                 else {
-                    plane = aerial_touch::Plane::from_calibration_points(calibration_points[0], calibration_points[1],
-                                                                          calibration_points[2],
-                                                                          config.calibration.minimum_point_distance_mm);
-                    if(plane.has_value()) {
+                    std::array<aerial_touch::Vec3, 7> points{};
+                    std::copy(calibration_points.begin(), calibration_points.end(), points.begin());
+                    const auto result = aerial_touch::calibrate_keypad(
+                        points, config.calibration.minimum_point_distance_mm);
+                    if(result.has_value()) {
+                        plane = result->plane;
+                        keypad.emplace(result->geometry);
+                        calibration_plane.reset();
                         calibrating = false;
-                        status = u8"校正完成";
+                        std::ostringstream geometry_status;
+                        geometry_status << std::fixed << std::setprecision(1)
+                                        << u8"校正完成：鍵盤 " << result->geometry.total_width_mm << u8" × "
+                                        << result->geometry.total_height_mm << u8" mm；按鍵 "
+                                        << result->geometry.key_width_mm << u8" × "
+                                        << result->geometry.key_height_mm << u8" mm；水平間距 "
+                                        << result->geometry.horizontal_gap_mm << u8" mm；垂直間距 "
+                                        << result->geometry.vertical_gap_mm << u8" mm";
+                        status = geometry_status.str();
                     }
                     else {
                         calibration_points.clear();
                         calibration_spreads.clear();
                         calibration_collector.clear();
-                        status = u8"校正失敗：三個位置太近或接近直線；請從 1 鍵左上角重新取樣";
+                        calibration_plane.reset();
+                        keypad.reset();
+                        status = u8"校正失敗：請確認第 3 點在 0 鍵正下方而非右下角，且第 4～7 點都是格線角點；請從 1 鍵左上角重新取樣";
                     }
                 }
             }
@@ -557,6 +594,8 @@ int main(int argc, char** argv) {
                 calibration_collector.clear();
                 collecting_calibration_samples = false;
                 plane.reset();
+                calibration_plane.reset();
+                keypad.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
                 fingertip_stabilizer.reset();
                 depth_stabilizer.reset();

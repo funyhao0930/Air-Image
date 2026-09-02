@@ -20,6 +20,7 @@ find_package(OrbbecSDK CONFIG REQUIRED PATHS "${ORBBEC_SDK_ROOT}/lib" NO_DEFAULT
 
 add_library(aerial_touch_core STATIC
     src/app_config.cpp
+    src/calibration_geometry.cpp
     src/calibration_sampler.cpp
     src/depth_sampler.cpp
     src/plane.cpp

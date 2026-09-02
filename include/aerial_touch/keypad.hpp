@@ -9,11 +9,16 @@
 namespace aerial_touch {
 
 struct KeypadConfig {
-    float key_width_mm{ 30.0F };
-    float key_height_mm{ 30.0F };
-    float horizontal_gap_mm{ 5.0F };
-    float vertical_gap_mm{ 5.0F };
     float boundary_hysteresis_mm{ 2.0F };
+};
+
+struct KeypadGeometry {
+    float total_width_mm{};
+    float total_height_mm{};
+    float key_width_mm{};
+    float key_height_mm{};
+    float horizontal_gap_mm{};
+    float vertical_gap_mm{};
 };
 
 struct KeyRegion {
@@ -26,7 +31,7 @@ struct KeyRegion {
 
 class Keypad {
 public:
-    explicit Keypad(KeypadConfig config);
+    explicit Keypad(KeypadGeometry geometry);
 
     std::optional<std::string> key_at(Vec2 uv_mm) const;
     std::optional<std::string> key_at(Vec2 uv_mm,

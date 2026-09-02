@@ -1,6 +1,7 @@
 #include "aerial_touch/app_config.hpp"
 #include "aerial_touch/alignment_mode.hpp"
 #include "aerial_touch/camera_settings.hpp"
+#include "aerial_touch/calibration_geometry.hpp"
 #include "aerial_touch/keypad.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/plane.hpp"
@@ -10,8 +11,10 @@
 #include "aerial_touch/touch_state_machine.hpp"
 
 #include <cmath>
+#include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 namespace {
 
@@ -50,8 +53,100 @@ bool plane_rejects_nearly_collinear_points() {
     return !plane.has_value();
 }
 
+std::array<aerial_touch::Vec3, 7> rectangular_keypad_calibration_points() {
+    return {
+        aerial_touch::Vec3{ 0.0F, 0.0F, 1000.0F },
+        aerial_touch::Vec3{ 240.0F, 0.0F, 1000.0F },
+        aerial_touch::Vec3{ 120.0F, 320.0F, 1000.0F },
+        aerial_touch::Vec3{ 76.0F, 0.0F, 1000.0F },
+        aerial_touch::Vec3{ 158.0F, 0.0F, 1000.0F },
+        aerial_touch::Vec3{ 0.0F, 70.0F, 1000.0F },
+        aerial_touch::Vec3{ 0.0F, 150.0F, 1000.0F },
+    };
+}
+
+bool keypad_calibration_derives_dimensions_and_gaps() {
+    const auto result = aerial_touch::calibrate_keypad(rectangular_keypad_calibration_points(), 80.0F);
+    if(!result.has_value()) {
+        return false;
+    }
+    const aerial_touch::Keypad keypad(result->geometry);
+    return approximately_equal(result->geometry.total_width_mm, 240.0F)
+           && approximately_equal(result->geometry.total_height_mm, 320.0F)
+           && approximately_equal(result->geometry.key_width_mm, 76.0F)
+           && approximately_equal(result->geometry.key_height_mm, 70.0F)
+           && approximately_equal(result->geometry.horizontal_gap_mm, 6.0F)
+           && approximately_equal(result->geometry.vertical_gap_mm, 10.0F)
+           && keypad.key_at({ 38.0F, 35.0F }).value_or("?") == "1"
+           && keypad.key_at({ 79.0F, 35.0F }).value_or("?") == "?"
+           && keypad.key_at({ 120.0F, 35.0F }).value_or("?") == "2";
+}
+
+bool keypad_calibration_supports_rotated_3d_plane() {
+    const aerial_touch::Vec3 origin{ 100.0F, 100.0F, 1000.0F };
+    const aerial_touch::Vec3 u_axis{ 0.8660254F, 0.0F, 0.5F };
+    const aerial_touch::Vec3 v_axis{ -0.25F, 0.8660254F, 0.4330127F };
+    const auto point = [&](const float u, const float v) {
+        return aerial_touch::Vec3{ origin.x + u_axis.x * u + v_axis.x * v,
+                                   origin.y + u_axis.y * u + v_axis.y * v,
+                                   origin.z + u_axis.z * u + v_axis.z * v };
+    };
+    const std::array<aerial_touch::Vec3, 7> points{
+        point(0.0F, 0.0F), point(240.0F, 0.0F), point(120.0F, 320.0F), point(76.0F, 0.0F),
+        point(158.0F, 0.0F), point(0.0F, 70.0F), point(0.0F, 150.0F),
+    };
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.key_width_mm, 76.0F)
+           && approximately_equal(result->geometry.key_height_mm, 70.0F)
+           && approximately_equal(result->geometry.horizontal_gap_mm, 6.0F)
+           && approximately_equal(result->geometry.vertical_gap_mm, 10.0F);
+}
+
+bool keypad_calibration_supports_zero_gap_keyboard() {
+    auto points = rectangular_keypad_calibration_points();
+    points[1] = { 240.0F, 0.0F, 1000.0F };
+    points[2] = { 120.0F, 280.0F, 1000.0F };
+    points[3] = { 80.0F, 0.0F, 1000.0F };
+    points[4] = { 160.0F, 0.0F, 1000.0F };
+    points[5] = { 0.0F, 70.0F, 1000.0F };
+    points[6] = { 0.0F, 140.0F, 1000.0F };
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.horizontal_gap_mm, 0.0F)
+           && approximately_equal(result->geometry.vertical_gap_mm, 0.0F);
+}
+
+bool keypad_calibration_clamps_small_negative_gap_from_pointing_error() {
+    auto points = rectangular_keypad_calibration_points();
+    points[1] = { 240.0F, 0.0F, 1000.0F };
+    points[2] = { 120.0F, 280.0F, 1000.0F };
+    points[3] = { 80.0F, 0.0F, 1000.0F };
+    points[4] = { 160.0F, 0.0F, 1000.0F };
+    points[5] = { 0.0F, 70.0F, 1000.0F };
+    points[6] = { 0.0F, 135.0F, 1000.0F };
+
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.vertical_gap_mm, 0.0F)
+           && aerial_touch::Keypad(result->geometry).key_at({ 120.0F, 245.0F }).value_or("?") == "0";
+}
+
+bool keypad_calibration_rejects_invalid_geometry() {
+    auto points = rectangular_keypad_calibration_points();
+    points[4] = { 60.0F, 0.0F, 1000.0F };
+    if(aerial_touch::calibrate_keypad(points, 80.0F).has_value()) {
+        return false;
+    }
+    points = rectangular_keypad_calibration_points();
+    points[2] = { 180.0F, 320.0F, 1000.0F };
+    if(aerial_touch::calibrate_keypad(points, 80.0F).has_value()) {
+        return false;
+    }
+    points = rectangular_keypad_calibration_points();
+    points[6] = { 0.0F, 50.0F, 1000.0F };
+    return !aerial_touch::calibrate_keypad(points, 80.0F).has_value();
+}
+
 bool keypad_maps_uv_to_expected_number() {
-    const aerial_touch::Keypad keypad({ 30.0F, 30.0F, 5.0F, 5.0F });
+    const aerial_touch::Keypad keypad({ 100.0F, 135.0F, 30.0F, 30.0F, 5.0F, 5.0F });
     return keypad.key_at({ 15.0F, 15.0F }).value_or("?") == "1"
            && keypad.key_at({ 50.0F, 15.0F }).value_or("?") == "2"
            && !keypad.key_at({ 105.0F, 15.0F }).has_value();
@@ -161,10 +256,7 @@ bool yaml_config_loads_all_runtime_thresholds() {
            && approximately_equal(config.touch.touch_threshold_mm, 9.0F)
            && approximately_equal(config.touch.release_threshold_mm, 22.0F)
            && approximately_equal(config.touch.min_approach_velocity_mm_s, 45.0F)
-           && config.touch.tracking_timeout_ms == 275 && approximately_equal(config.keypad.key_width_mm, 31.0F)
-           && approximately_equal(config.keypad.key_height_mm, 32.0F)
-           && approximately_equal(config.keypad.horizontal_gap_mm, 6.0F)
-           && approximately_equal(config.keypad.vertical_gap_mm, 7.0F)
+           && config.touch.tracking_timeout_ms == 275
            && approximately_equal(config.keypad.boundary_hysteresis_mm, 2.0F)
            && approximately_equal(config.calibration.minimum_point_distance_mm, 85.0F)
            && config.calibration.required_samples == 18U
@@ -177,9 +269,16 @@ bool yaml_config_round_trips_through_save() {
         std::filesystem::path(TEST_SOURCE_DIR) / "tests" / "data" / "config.yaml");
     const auto path = std::filesystem::temp_directory_path() / "aerial_touch_config_roundtrip.yaml";
     aerial_touch::save_app_config(source, path);
+    std::ifstream saved(path);
+    const std::string saved_text((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    saved.close();
     const auto restored = aerial_touch::load_app_config(path);
     std::filesystem::remove(path);
-    return restored.camera.depth_work_mode == source.camera.depth_work_mode
+    return saved_text.find("key_width_mm") == std::string::npos
+           && saved_text.find("key_height_mm") == std::string::npos
+           && saved_text.find("horizontal_gap_mm") == std::string::npos
+           && saved_text.find("vertical_gap_mm") == std::string::npos
+           && restored.camera.depth_work_mode == source.camera.depth_work_mode
            && restored.camera.depth_precision == source.camera.depth_precision
            && restored.camera.preferred_fps == source.camera.preferred_fps
            && restored.camera.sdk_temporal_filter == source.camera.sdk_temporal_filter
@@ -198,10 +297,6 @@ bool yaml_config_round_trips_through_save() {
            && approximately_equal(restored.touch.release_threshold_mm, source.touch.release_threshold_mm)
            && approximately_equal(restored.touch.min_approach_velocity_mm_s, source.touch.min_approach_velocity_mm_s)
            && restored.touch.tracking_timeout_ms == source.touch.tracking_timeout_ms
-           && approximately_equal(restored.keypad.key_width_mm, source.keypad.key_width_mm)
-           && approximately_equal(restored.keypad.key_height_mm, source.keypad.key_height_mm)
-           && approximately_equal(restored.keypad.horizontal_gap_mm, source.keypad.horizontal_gap_mm)
-           && approximately_equal(restored.keypad.vertical_gap_mm, source.keypad.vertical_gap_mm)
            && approximately_equal(restored.keypad.boundary_hysteresis_mm, source.keypad.boundary_hysteresis_mm)
            && approximately_equal(restored.calibration.minimum_point_distance_mm,
                                   source.calibration.minimum_point_distance_mm)
@@ -360,7 +455,7 @@ bool app_config_validation_rejects_invalid_values() {
     }
 
     config = aerial_touch::AppConfig{};
-    config.keypad.horizontal_gap_mm = -1.0F;
+    config.keypad.boundary_hysteresis_mm = -1.0F;
     bool rejects_negative_gap = false;
     try {
         aerial_touch::validate_app_config(config);
@@ -434,6 +529,11 @@ bool unavailable_hardware_d2c_uses_software_alignment() {
 bool run_interaction_core_tests() {
     return plane_projection_uses_camera_facing_normal() && plane_uses_configured_minimum_point_distance()
            && plane_rejects_nearly_collinear_points()
+           && keypad_calibration_derives_dimensions_and_gaps()
+           && keypad_calibration_supports_rotated_3d_plane()
+           && keypad_calibration_supports_zero_gap_keyboard()
+           && keypad_calibration_clamps_small_negative_gap_from_pointing_error()
+           && keypad_calibration_rejects_invalid_geometry()
            && keypad_maps_uv_to_expected_number() && keypad_overlay_prioritizes_pressed_key()
            && keypad_overlay_clears_pressed_key_when_not_currently_held()
            && touch_requires_release_before_repeat_press() && touch_does_not_press_outside_keypad()

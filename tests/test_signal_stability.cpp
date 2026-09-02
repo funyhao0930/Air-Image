@@ -112,7 +112,7 @@ bool calibration_requires_enough_samples_and_caps_collection() {
 }
 
 bool keypad_boundary_hysteresis_ignores_small_jitter() {
-    const aerial_touch::Keypad keypad({ 30.0F, 30.0F, 5.0F, 5.0F });
+    const aerial_touch::Keypad keypad({ 100.0F, 135.0F, 30.0F, 30.0F, 5.0F, 5.0F });
     const auto held = keypad.key_at({ 30.5F, 15.0F }, std::optional<std::string>{ "1" }, 2.0F);
     const auto released = keypad.key_at({ 32.5F, 15.0F }, std::optional<std::string>{ "1" }, 2.0F);
     return held.value_or("?") == "1" && !released.has_value();

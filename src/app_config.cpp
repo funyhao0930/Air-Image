@@ -48,8 +48,6 @@ void validate_app_config(const AppConfig& config) {
        || !std::isfinite(config.touch.touch_threshold_mm)
        || !std::isfinite(config.touch.release_threshold_mm)
        || !std::isfinite(config.touch.min_approach_velocity_mm_s)
-       || !std::isfinite(config.keypad.key_width_mm) || !std::isfinite(config.keypad.key_height_mm)
-       || !std::isfinite(config.keypad.horizontal_gap_mm) || !std::isfinite(config.keypad.vertical_gap_mm)
        || !std::isfinite(config.keypad.boundary_hysteresis_mm)
        || !std::isfinite(config.calibration.minimum_point_distance_mm)
        || config.calibration.required_samples < 15U || config.calibration.required_samples > 20U
@@ -58,8 +56,6 @@ void validate_app_config(const AppConfig& config) {
        || config.touch.touch_threshold_mm < 0.0F
        || config.touch.release_threshold_mm <= config.touch.touch_threshold_mm
        || config.touch.min_approach_velocity_mm_s < 0.0F || config.touch.tracking_timeout_ms <= 0
-       || config.keypad.key_width_mm <= 0.0F || config.keypad.key_height_mm <= 0.0F
-       || config.keypad.horizontal_gap_mm < 0.0F || config.keypad.vertical_gap_mm < 0.0F
        || config.keypad.boundary_hysteresis_mm < 0.0F
        || config.calibration.minimum_point_distance_mm <= 0.0F
        || config.calibration.mad_multiplier <= 0.0F
@@ -105,10 +101,6 @@ AppConfig load_app_config(const std::filesystem::path& path) {
     config.touch.min_approach_velocity_mm_s =
         required_value<float>(root, "touch", "min_approach_velocity_mm_s");
     config.touch.tracking_timeout_ms = required_value<std::int64_t>(root, "touch", "tracking_timeout_ms");
-    config.keypad.key_width_mm = required_value<float>(root, "keypad", "key_width_mm");
-    config.keypad.key_height_mm = required_value<float>(root, "keypad", "key_height_mm");
-    config.keypad.horizontal_gap_mm = required_value<float>(root, "keypad", "horizontal_gap_mm");
-    config.keypad.vertical_gap_mm = required_value<float>(root, "keypad", "vertical_gap_mm");
     config.keypad.boundary_hysteresis_mm =
         optional_value<float>(root, "keypad", "boundary_hysteresis_mm", config.keypad.boundary_hysteresis_mm);
     config.calibration.minimum_point_distance_mm =
@@ -162,10 +154,6 @@ void save_app_config(const AppConfig& config, const std::filesystem::path& path)
     emitter << YAML::Key << "tracking_timeout_ms" << YAML::Value << config.touch.tracking_timeout_ms;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "keypad" << YAML::Value << YAML::BeginMap;
-    emitter << YAML::Key << "key_width_mm" << YAML::Value << config.keypad.key_width_mm;
-    emitter << YAML::Key << "key_height_mm" << YAML::Value << config.keypad.key_height_mm;
-    emitter << YAML::Key << "horizontal_gap_mm" << YAML::Value << config.keypad.horizontal_gap_mm;
-    emitter << YAML::Key << "vertical_gap_mm" << YAML::Value << config.keypad.vertical_gap_mm;
     emitter << YAML::Key << "boundary_hysteresis_mm" << YAML::Value << config.keypad.boundary_hysteresis_mm;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "calibration" << YAML::Value << YAML::BeginMap;

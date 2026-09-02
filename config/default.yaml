@@ -26,10 +26,6 @@ touch:
   tracking_timeout_ms: 300
 
 keypad:
-  key_width_mm: 30.0
-  key_height_mm: 30.0
-  horizontal_gap_mm: 5.0
-  vertical_gap_mm: 5.0
   boundary_hysteresis_mm: 2.0
 
 calibration:
