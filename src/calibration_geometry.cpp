@@ -14,6 +14,7 @@ constexpr std::size_t kSecondKeyRightPoint = 4U;
 constexpr std::size_t kFirstKeyBottomPoint = 5U;
 constexpr std::size_t kSecondRowBottomPoint = 6U;
 constexpr float kMinimumDimensionMm = 0.001F;
+constexpr float kCornerPlacementToleranceRatio = 0.30F;
 
 bool finite(const PlanePoint point) {
     return std::isfinite(point.u_mm) && std::isfinite(point.v_mm) && std::isfinite(point.signed_distance_mm);
@@ -60,15 +61,20 @@ std::optional<KeypadCalibrationResult> calibrate_keypad(
         return std::nullopt;
     }
 
-    const float tolerance = std::max(5.0F, 0.15F * std::min(key_width, key_height));
+    const float tolerance = std::max(5.0F, kCornerPlacementToleranceRatio * std::min(key_width, key_height));
     if(raw_horizontal_gap < -tolerance || raw_vertical_gap < -tolerance) {
         return std::nullopt;
     }
 
     const float horizontal_gap = std::max(0.0F, raw_horizontal_gap);
     const float vertical_gap = std::max(0.0F, raw_vertical_gap);
+    const float zero_column_left = key_width + horizontal_gap;
+    const float zero_column_right = zero_column_left + key_width;
+    const bool bottom_boundary_is_below_zero_column =
+        projected[kBottomBoundaryPoint].u_mm >= zero_column_left - tolerance
+        && projected[kBottomBoundaryPoint].u_mm <= zero_column_right + tolerance;
     if(!close_enough(projected[kRightBoundaryPoint].v_mm, 0.0F, tolerance)
-       || !close_enough(projected[kBottomBoundaryPoint].u_mm, total_width / 2.0F, tolerance)
+       || !bottom_boundary_is_below_zero_column
        || !close_enough(projected[kFirstKeyRightPoint].v_mm, 0.0F, tolerance)
        || !close_enough(projected[kSecondKeyRightPoint].v_mm, 0.0F, tolerance)
        || !close_enough(projected[kFirstKeyBottomPoint].u_mm, 0.0F, tolerance)

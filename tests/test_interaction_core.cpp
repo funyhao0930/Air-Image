@@ -129,6 +129,28 @@ bool keypad_calibration_clamps_small_negative_gap_from_pointing_error() {
            && aerial_touch::Keypad(result->geometry).key_at({ 120.0F, 245.0F }).value_or("?") == "0";
 }
 
+bool keypad_calibration_accepts_reasonable_corner_placement_error() {
+    auto points = rectangular_keypad_calibration_points();
+    points[3] = { 76.0F, 14.0F, 1000.0F };
+    points[4] = { 158.0F, 14.0F, 1000.0F };
+    points[5] = { 14.0F, 70.0F, 1000.0F };
+    points[6] = { 14.0F, 150.0F, 1000.0F };
+
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.key_width_mm, 76.0F)
+           && approximately_equal(result->geometry.key_height_mm, 70.0F)
+           && approximately_equal(result->geometry.horizontal_gap_mm, 6.0F)
+           && approximately_equal(result->geometry.vertical_gap_mm, 10.0F);
+}
+
+bool keypad_calibration_accepts_bottom_boundary_inside_zero_column() {
+    auto points = rectangular_keypad_calibration_points();
+    points[2] = { 145.0F, 320.0F, 1000.0F };
+
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.total_height_mm, 320.0F);
+}
+
 bool keypad_calibration_rejects_invalid_geometry() {
     auto points = rectangular_keypad_calibration_points();
     points[4] = { 60.0F, 0.0F, 1000.0F };
@@ -136,7 +158,7 @@ bool keypad_calibration_rejects_invalid_geometry() {
         return false;
     }
     points = rectangular_keypad_calibration_points();
-    points[2] = { 180.0F, 320.0F, 1000.0F };
+    points[2] = { 220.0F, 320.0F, 1000.0F };
     if(aerial_touch::calibrate_keypad(points, 80.0F).has_value()) {
         return false;
     }
@@ -542,6 +564,8 @@ bool run_interaction_core_tests() {
            && keypad_calibration_supports_rotated_3d_plane()
            && keypad_calibration_supports_zero_gap_keyboard()
            && keypad_calibration_clamps_small_negative_gap_from_pointing_error()
+           && keypad_calibration_accepts_reasonable_corner_placement_error()
+           && keypad_calibration_accepts_bottom_boundary_inside_zero_column()
            && keypad_calibration_rejects_invalid_geometry()
            && keypad_maps_uv_to_expected_number() && keypad_overlay_prioritizes_pressed_key()
            && keypad_overlay_clears_pressed_key_when_not_currently_held()
