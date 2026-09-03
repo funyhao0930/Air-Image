@@ -78,7 +78,7 @@ void text_line(aerial_touch::Utf8TextCanvas& canvas,
                const std::string& text,
                const int row,
                const cv::Scalar color = { 255, 255, 255 }) {
-    canvas.draw(text, { 12, 10 + row * 24 }, color);
+    canvas.draw(text, { 12, 10 + row * 34 }, color);
 }
 
 void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {

@@ -117,11 +117,13 @@ if(BUILD_TESTING)
 
     add_executable(aerial_touch_tests
         tests/test_depth_sampler.cpp
+        tests/test_hud_text.cpp
         tests/test_interaction_core.cpp
         tests/test_signal_stability.cpp
+        src/utf8_text.cpp
     )
 
-    target_link_libraries(aerial_touch_tests PRIVATE aerial_touch_core)
+    target_link_libraries(aerial_touch_tests PRIVATE aerial_touch_core ${OpenCV_LIBS})
     target_compile_definitions(aerial_touch_tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME aerial_touch_tests COMMAND aerial_touch_tests)
 

@@ -3,7 +3,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cstring>
 #include <utility>
 
@@ -67,7 +66,7 @@ struct Utf8TextCanvas::Impl {
         }
         previous_bitmap = SelectObject(memory_dc, bitmap);
 
-        font = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        font = CreateFontW(-28, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
                            L"Microsoft JhengHei UI");
         if(font == nullptr) {
@@ -117,15 +116,8 @@ struct Utf8TextCanvas::Impl {
             if(wide_text.empty()) {
                 return;
             }
-            static const std::array<cv::Point, 8> outline_offsets{ {
-                { -1, -1 }, { 0, -1 }, { 1, -1 }, { -1, 0 },
-                { 1, 0 },   { -1, 1 }, { 0, 1 },  { 1, 1 },
-            } };
             SetTextColor(memory_dc, RGB(0, 0, 0));
-            for(const auto& offset : outline_offsets) {
-                TextOutW(memory_dc, origin.x + offset.x, origin.y + offset.y, wide_text.c_str(),
-                         static_cast<int>(wide_text.size()));
-            }
+            TextOutW(memory_dc, origin.x + 1, origin.y + 1, wide_text.c_str(), static_cast<int>(wide_text.size()));
             SetTextColor(memory_dc, color_ref(color));
             TextOutW(memory_dc, origin.x, origin.y, wide_text.c_str(), static_cast<int>(wide_text.size()));
             return;
