@@ -54,4 +54,49 @@ std::optional<float> sample_depth_median_mm(
     return (*lower_middle + upper_middle) / 2.0F;
 }
 
+std::vector<DepthPixelSample> sample_depth_annulus_mm(
+    const std::vector<std::uint16_t>& depth_values,
+    const int width,
+    const int height,
+    const int pixel_x,
+    const int pixel_y,
+    const int inner_radius,
+    const int outer_radius,
+    const float depth_unit_mm) {
+    if(width <= 0 || height <= 0 || inner_radius < 0 || outer_radius <= inner_radius
+       || !std::isfinite(depth_unit_mm) || depth_unit_mm <= 0.0F
+       || depth_values.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) {
+        return {};
+    }
+
+    const int left = std::max(0, pixel_x - outer_radius);
+    const int right = std::min(width - 1, pixel_x + outer_radius);
+    const int top = std::max(0, pixel_y - outer_radius);
+    const int bottom = std::min(height - 1, pixel_y + outer_radius);
+    if(left > right || top > bottom) {
+        return {};
+    }
+
+    const int inner_radius_squared = inner_radius * inner_radius;
+    const int outer_radius_squared = outer_radius * outer_radius;
+    std::vector<DepthPixelSample> samples;
+    samples.reserve(static_cast<std::size_t>((right - left + 1) * (bottom - top + 1)));
+    for(int y = top; y <= bottom; ++y) {
+        for(int x = left; x <= right; ++x) {
+            const int offset_x = x - pixel_x;
+            const int offset_y = y - pixel_y;
+            const int distance_squared = offset_x * offset_x + offset_y * offset_y;
+            if(distance_squared <= inner_radius_squared || distance_squared > outer_radius_squared) {
+                continue;
+            }
+            const std::uint16_t raw_depth = depth_values[static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
+                                                         + static_cast<std::size_t>(x)];
+            if(raw_depth != 0U) {
+                samples.push_back({ x, y, static_cast<float>(raw_depth) * depth_unit_mm });
+            }
+        }
+    }
+    return samples;
+}
+
 }  // namespace aerial_touch

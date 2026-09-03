@@ -8,6 +8,8 @@
 #include "aerial_touch/keypad_overlay.hpp"
 #include "aerial_touch/rgbd_frame.hpp"
 #include "aerial_touch/settings_window.hpp"
+#include "aerial_touch/surface_plane.hpp"
+#include "aerial_touch/surface_scan.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
 
 #include <cmath>
@@ -15,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <vector>
 
 namespace {
 
@@ -51,6 +54,198 @@ bool plane_rejects_nearly_collinear_points() {
         { 100.0F, 0.0F, 1000.0F },
         { 100.0F, 1.0F, 1000.0F });
     return !plane.has_value();
+}
+
+bool surface_plane_fit_removes_fingertip_height_offsets() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x <= 120; x += 20) {
+        for(int y = 0; y <= 80; y += 20) {
+            samples.push_back({ static_cast<float>(x), static_cast<float>(y), 1000.0F });
+        }
+    }
+    samples.push_back({ 40.0F, 40.0F, 920.0F });
+    samples.push_back({ 80.0F, 40.0F, 1080.0F });
+
+    aerial_touch::SurfacePlaneFitConfig config;
+    config.minimum_samples = 20U;
+    config.inlier_threshold_mm = 3.0F;
+    config.maximum_rms_residual_mm = 1.0F;
+    aerial_touch::SurfacePlaneFitQuality quality;
+    const auto plane = aerial_touch::SurfacePlane::fit(samples, config, &quality);
+    if(!plane.has_value() || quality.inlier_samples != 35U || quality.total_samples != 37U) {
+        return false;
+    }
+
+    const auto projected = plane->project_to_surface({ 60.0F, 40.0F, 965.0F });
+    const auto hit = plane->intersect_ray({ 60.0F, 40.0F, 900.0F }, { 0.0F, 0.0F, 1.0F });
+    return projected.has_value() && hit.has_value() && approximately_equal(projected->x, 60.0F)
+           && approximately_equal(projected->y, 40.0F) && approximately_equal(projected->z, 1000.0F)
+           && approximately_equal(hit->x, 60.0F) && approximately_equal(hit->y, 40.0F)
+           && approximately_equal(hit->z, 1000.0F);
+}
+
+bool surface_projection_keeps_keypad_geometry_with_varying_fingertip_heights() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x <= 240; x += 40) {
+        for(int y = 0; y <= 320; y += 40) {
+            samples.push_back({ static_cast<float>(x), static_cast<float>(y), 1000.0F });
+        }
+    }
+    aerial_touch::SurfacePlaneFitConfig config;
+    config.minimum_samples = 30U;
+    config.inlier_threshold_mm = 2.0F;
+    config.maximum_rms_residual_mm = 0.5F;
+    const auto surface = aerial_touch::SurfacePlane::fit(samples, config);
+    if(!surface.has_value()) {
+        return false;
+    }
+
+    const std::array<aerial_touch::Vec3, 7> fingertips{
+        aerial_touch::Vec3{ 0.0F, 0.0F, 982.0F }, aerial_touch::Vec3{ 240.0F, 0.0F, 1017.0F },
+        aerial_touch::Vec3{ 120.0F, 320.0F, 989.0F }, aerial_touch::Vec3{ 76.0F, 0.0F, 1022.0F },
+        aerial_touch::Vec3{ 158.0F, 0.0F, 977.0F }, aerial_touch::Vec3{ 0.0F, 70.0F, 1013.0F },
+        aerial_touch::Vec3{ 0.0F, 150.0F, 985.0F },
+    };
+    std::array<aerial_touch::Vec3, 7> points{};
+    for(std::size_t index = 0; index < fingertips.size(); ++index) {
+        const auto projected = surface->project_to_surface(fingertips[index]);
+        if(!projected.has_value()) {
+            return false;
+        }
+        points[index] = *projected;
+    }
+    const auto result = aerial_touch::calibrate_keypad(points, 80.0F);
+    return result.has_value() && approximately_equal(result->geometry.total_width_mm, 240.0F)
+           && approximately_equal(result->geometry.total_height_mm, 320.0F)
+           && approximately_equal(result->geometry.key_width_mm, 76.0F)
+           && approximately_equal(result->geometry.key_height_mm, 70.0F);
+}
+
+bool surface_plane_fit_rejects_competing_depth_planes() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x < 8; ++x) {
+        for(int y = 0; y < 8; ++y) {
+            samples.push_back({ static_cast<float>(x * 20), static_cast<float>(y * 20), 1000.0F });
+            samples.push_back({ static_cast<float>(x * 20), static_cast<float>(y * 20), 1040.0F });
+        }
+    }
+    aerial_touch::SurfacePlaneFitConfig config;
+    config.minimum_samples = 60U;
+    config.minimum_inlier_ratio = 0.70F;
+    config.inlier_threshold_mm = 3.0F;
+    return !aerial_touch::SurfacePlane::fit(samples, config).has_value();
+}
+
+bool surface_plane_fit_supports_rotated_target_and_ray_intersection() {
+    const aerial_touch::Vec3 origin{ 100.0F, 50.0F, 900.0F };
+    const aerial_touch::Vec3 u_axis{ 0.8660254F, 0.0F, 0.5F };
+    const aerial_touch::Vec3 v_axis{ -0.25F, 0.8660254F, 0.4330127F };
+    const aerial_touch::Vec3 normal{ -0.4330127F, -0.5F, 0.75F };
+    const auto point = [&](const float u, const float v) {
+        return aerial_touch::Vec3{ origin.x + u_axis.x * u + v_axis.x * v,
+                                   origin.y + u_axis.y * u + v_axis.y * v,
+                                   origin.z + u_axis.z * u + v_axis.z * v };
+    };
+
+    std::vector<aerial_touch::Vec3> samples;
+    for(int u = 0; u <= 240; u += 40) {
+        for(int v = 0; v <= 320; v += 40) {
+            samples.push_back(point(static_cast<float>(u), static_cast<float>(v)));
+        }
+    }
+    samples.push_back({ 10.0F, 20.0F, 400.0F });
+    samples.push_back({ 600.0F, 300.0F, 1200.0F });
+    aerial_touch::SurfacePlaneFitConfig config;
+    config.minimum_samples = 30U;
+    config.inlier_threshold_mm = 2.0F;
+    config.maximum_rms_residual_mm = 0.5F;
+    const auto surface = aerial_touch::SurfacePlane::fit(samples, config);
+    const auto expected = point(120.0F, 160.0F);
+    const aerial_touch::Vec3 ray_origin{ expected.x - normal.x * 200.0F, expected.y - normal.y * 200.0F,
+                                          expected.z - normal.z * 200.0F };
+    const auto hit = surface.has_value() ? surface->intersect_ray(ray_origin, normal) : std::nullopt;
+    return hit.has_value() && approximately_equal(hit->x, expected.x) && approximately_equal(hit->y, expected.y)
+           && approximately_equal(hit->z, expected.z);
+}
+
+bool surface_scan_completes_only_after_minimum_duration_and_valid_plane() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x < 10; ++x) {
+        for(int y = 0; y < 10; ++y) {
+            samples.push_back({ static_cast<float>(x * 20), static_cast<float>(y * 20), 1000.0F });
+        }
+    }
+    aerial_touch::SurfaceScanConfig config;
+    config.minimum_duration_ms = 100;
+    config.timeout_ms = 1000;
+    config.plane_fit.minimum_samples = 60U;
+    config.plane_fit.inlier_threshold_mm = 2.0F;
+    config.plane_fit.maximum_rms_residual_mm = 0.5F;
+    aerial_touch::SurfaceScanCollector scan(config);
+    scan.begin(0);
+    if(scan.add(samples, 99).state != aerial_touch::SurfaceScanState::Collecting) {
+        return false;
+    }
+    const auto progress = scan.add(samples, 100);
+    return progress.state == aerial_touch::SurfaceScanState::Complete && progress.quality.inlier_samples >= 60U
+           && scan.surface_plane().has_value();
+}
+
+bool surface_scan_fails_after_timeout_without_a_valid_plane() {
+    aerial_touch::SurfaceScanConfig config;
+    config.minimum_duration_ms = 100;
+    config.timeout_ms = 200;
+    config.plane_fit.minimum_samples = 10U;
+    aerial_touch::SurfaceScanCollector scan(config);
+    scan.begin(0);
+    return scan.add({}, 201).state == aerial_touch::SurfaceScanState::Failed && !scan.surface_plane().has_value();
+}
+
+bool surface_scan_throttles_failed_plane_fit_attempts() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x < 10; ++x) {
+        for(int y = 0; y < 10; ++y) {
+            samples.push_back({ static_cast<float>(x * 20), static_cast<float>(y * 20), 1000.0F });
+        }
+    }
+    aerial_touch::SurfaceScanConfig config;
+    config.minimum_duration_ms = 100;
+    config.timeout_ms = 1000;
+    config.fit_interval_ms = 100;
+    config.plane_fit.minimum_samples = 60U;
+    config.plane_fit.inlier_threshold_mm = 2.0F;
+    config.plane_fit.maximum_rms_residual_mm = 0.5F;
+    aerial_touch::SurfaceScanCollector scan(config);
+    scan.begin(0);
+    if(scan.add({}, 100).state != aerial_touch::SurfaceScanState::Collecting) {
+        return false;
+    }
+    if(scan.add(samples, 150).state != aerial_touch::SurfaceScanState::Collecting) {
+        return false;
+    }
+    return scan.add(samples, 200).state == aerial_touch::SurfaceScanState::Complete;
+}
+
+bool surface_scan_retries_after_camera_timestamp_moves_backward() {
+    std::vector<aerial_touch::Vec3> samples;
+    for(int x = 0; x < 10; ++x) {
+        for(int y = 0; y < 10; ++y) {
+            samples.push_back({ static_cast<float>(x * 20), static_cast<float>(y * 20), 1000.0F });
+        }
+    }
+    aerial_touch::SurfaceScanConfig config;
+    config.minimum_duration_ms = 100;
+    config.timeout_ms = 1000;
+    config.fit_interval_ms = 100;
+    config.plane_fit.minimum_samples = 60U;
+    config.plane_fit.inlier_threshold_mm = 2.0F;
+    config.plane_fit.maximum_rms_residual_mm = 0.5F;
+    aerial_touch::SurfaceScanCollector scan(config);
+    scan.begin(0);
+    if(scan.add({}, 200).state != aerial_touch::SurfaceScanState::Collecting) {
+        return false;
+    }
+    return scan.add(samples, 150).state == aerial_touch::SurfaceScanState::Complete;
 }
 
 std::array<aerial_touch::Vec3, 7> rectangular_keypad_calibration_points() {
@@ -165,6 +360,14 @@ bool keypad_calibration_rejects_invalid_geometry() {
     points = rectangular_keypad_calibration_points();
     points[6] = { 0.0F, 50.0F, 1000.0F };
     return !aerial_touch::calibrate_keypad(points, 80.0F).has_value();
+}
+
+bool keypad_calibration_reports_bottom_boundary_outside_zero_column() {
+    auto points = rectangular_keypad_calibration_points();
+    points[2] = { 220.0F, 320.0F, 1000.0F };
+    const auto attempt = aerial_touch::calibrate_keypad_detailed(points, 80.0F);
+    return !attempt.result.has_value()
+           && attempt.failure == aerial_touch::KeypadCalibrationFailure::BottomBoundaryOutsideZeroColumn;
 }
 
 bool keypad_maps_uv_to_expected_number() {
@@ -560,6 +763,14 @@ bool unavailable_hardware_d2c_uses_software_alignment() {
 bool run_interaction_core_tests() {
     return plane_projection_uses_camera_facing_normal() && plane_uses_configured_minimum_point_distance()
            && plane_rejects_nearly_collinear_points()
+           && surface_plane_fit_removes_fingertip_height_offsets()
+           && surface_projection_keeps_keypad_geometry_with_varying_fingertip_heights()
+           && surface_plane_fit_rejects_competing_depth_planes()
+           && surface_plane_fit_supports_rotated_target_and_ray_intersection()
+           && surface_scan_completes_only_after_minimum_duration_and_valid_plane()
+           && surface_scan_fails_after_timeout_without_a_valid_plane()
+           && surface_scan_throttles_failed_plane_fit_attempts()
+           && surface_scan_retries_after_camera_timestamp_moves_backward()
            && keypad_calibration_derives_dimensions_and_gaps()
            && keypad_calibration_supports_rotated_3d_plane()
            && keypad_calibration_supports_zero_gap_keyboard()
@@ -567,6 +778,7 @@ bool run_interaction_core_tests() {
            && keypad_calibration_accepts_reasonable_corner_placement_error()
            && keypad_calibration_accepts_bottom_boundary_inside_zero_column()
            && keypad_calibration_rejects_invalid_geometry()
+           && keypad_calibration_reports_bottom_boundary_outside_zero_column()
            && keypad_maps_uv_to_expected_number() && keypad_overlay_prioritizes_pressed_key()
            && keypad_overlay_clears_pressed_key_when_not_currently_held()
            && fixed_keypad_overlay_layout_has_default_size()

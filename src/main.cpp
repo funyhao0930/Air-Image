@@ -9,6 +9,8 @@
 #include "aerial_touch/plane.hpp"
 #include "aerial_touch/settings_window.hpp"
 #include "aerial_touch/signal_stabilizer.hpp"
+#include "aerial_touch/surface_plane.hpp"
+#include "aerial_touch/surface_scan.hpp"
 #include "aerial_touch/touch_state_machine.hpp"
 #include "aerial_touch/utf8_text.hpp"
 
@@ -32,6 +34,9 @@ namespace {
 
 constexpr int kIndexFingerTip = 8;
 constexpr const char* kWindowName = "aerial_touch_window";
+constexpr float kRayNearDepthMm = 400.0F;
+constexpr float kRayFarDepthMm = 1600.0F;
+constexpr std::size_t kMinimumSurfacePatchSamples = 16U;
 
 struct CliOptions {
     std::filesystem::path config{ "config/default.yaml" };
@@ -79,6 +84,73 @@ void text_line(aerial_touch::Utf8TextCanvas& canvas,
                const int row,
                const cv::Scalar color = { 255, 255, 255 }) {
     canvas.draw(text, { 12, 10 + row * 34 }, color);
+}
+
+std::vector<aerial_touch::Vec3> surface_patch_samples(const aerial_touch::OrbbecCamera& camera,
+                                                       const aerial_touch::RgbdFrame& frame,
+                                                       const aerial_touch::Vec2 fingertip_pixel,
+                                                       const int depth_sample_radius) {
+    const int inner_radius = std::max(2, depth_sample_radius + 1);
+    std::vector<aerial_touch::DepthPixelSample> depth_samples;
+    for(const int outer_radius : { inner_radius + 4, inner_radius + 8, inner_radius + 12 }) {
+        depth_samples = aerial_touch::sample_depth_annulus_mm(
+            frame.depth, frame.depth_width, frame.depth_height, static_cast<int>(std::lround(fingertip_pixel.x)),
+            static_cast<int>(std::lround(fingertip_pixel.y)), inner_radius, outer_radius, frame.depth_unit_mm);
+        if(depth_samples.size() >= kMinimumSurfacePatchSamples) {
+            break;
+        }
+    }
+    if(depth_samples.size() < kMinimumSurfacePatchSamples) {
+        return {};
+    }
+
+    std::vector<aerial_touch::Vec3> samples;
+    samples.reserve(depth_samples.size());
+    for(const auto& sample : depth_samples) {
+        const auto point = camera.deproject(frame, { static_cast<float>(sample.x), static_cast<float>(sample.y) },
+                                            sample.depth_mm);
+        if(point.has_value()) {
+            samples.push_back(*point);
+        }
+    }
+    return samples;
+}
+
+std::optional<aerial_touch::Vec3> surface_point_at_fingertip_pixel(
+    const aerial_touch::OrbbecCamera& camera,
+    const aerial_touch::RgbdFrame& frame,
+    const aerial_touch::Vec2 fingertip_pixel,
+    const aerial_touch::SurfacePlane& surface) {
+    const auto near_point = camera.deproject(frame, fingertip_pixel, kRayNearDepthMm);
+    const auto far_point = camera.deproject(frame, fingertip_pixel, kRayFarDepthMm);
+    if(!near_point.has_value() || !far_point.has_value()) {
+        return std::nullopt;
+    }
+    return surface.intersect_ray(*near_point,
+                                 { far_point->x - near_point->x, far_point->y - near_point->y,
+                                   far_point->z - near_point->z });
+}
+
+std::string calibration_failure_text(const aerial_touch::KeypadCalibrationFailure failure) {
+    switch(failure) {
+    case aerial_touch::KeypadCalibrationFailure::InvalidPlane:
+        return u8"校正失敗：鍵盤表面方向無法建立";
+    case aerial_touch::KeypadCalibrationFailure::InvalidDimensions:
+        return u8"校正失敗：鍵盤或按鍵尺寸無效";
+    case aerial_touch::KeypadCalibrationFailure::OverlappingKeys:
+        return u8"校正失敗：按鍵尺寸與間距互相重疊";
+    case aerial_touch::KeypadCalibrationFailure::BottomBoundaryOutsideZeroColumn:
+        return u8"校正失敗：P3 未落在 0 鍵正下方欄位";
+    case aerial_touch::KeypadCalibrationFailure::TopBoundaryMismatch:
+        return u8"校正失敗：P2、P4 或 P5 未對齊鍵盤上邊界";
+    case aerial_touch::KeypadCalibrationFailure::LeftBoundaryMismatch:
+        return u8"校正失敗：P6 或 P7 未對齊左側邊界";
+    case aerial_touch::KeypadCalibrationFailure::TotalSizeMismatch:
+        return u8"校正失敗：七點量得的總寬高不符合 3×4 比例";
+    case aerial_touch::KeypadCalibrationFailure::None:
+        return u8"校正失敗：未知的鍵盤幾何錯誤";
+    }
+    return u8"校正失敗：未知的鍵盤幾何錯誤";
 }
 
 void draw_hand(cv::Mat& image, const aerial_touch::HandObservation& hand) {
@@ -150,7 +222,8 @@ int main(int argc, char** argv) {
         aerial_touch::SettingsWindow settings_window;
         bool settings_window_created = false;
         std::optional<aerial_touch::Plane> plane;
-        std::optional<aerial_touch::Plane> calibration_plane;
+        aerial_touch::SurfaceScanCollector surface_scan;
+        std::optional<aerial_touch::SurfacePlane> calibration_surface;
         std::vector<aerial_touch::Vec3> calibration_points;
         std::vector<aerial_touch::Vec3> calibration_spreads;
         std::optional<aerial_touch::Vec3> current_xyz;
@@ -163,6 +236,7 @@ int main(int argc, char** argv) {
         std::optional<aerial_touch::PressEvent> last_event;
         std::optional<std::int64_t> last_confirmed_timestamp_ms;
         bool calibrating = false;
+        bool scanning_surface = false;
         bool collecting_calibration_samples = false;
 
         const auto apply_runtime_config = [&](const aerial_touch::AppConfig& candidate, std::string& error) {
@@ -284,6 +358,7 @@ int main(int argc, char** argv) {
             current_key.reset();
             std::optional<std::string> fingertip_pixel_text;
             std::optional<aerial_touch::Vec2> raw_pixel;
+            std::optional<aerial_touch::Vec2> filtered_tip_pixel;
             if(hand.detected && hand.landmark_count > kIndexFingerTip
                && std::isfinite(hand.landmarks[kIndexFingerTip].x)
                && std::isfinite(hand.landmarks[kIndexFingerTip].y)) {
@@ -298,6 +373,7 @@ int main(int argc, char** argv) {
                                                   0, frame->color_width - 1);
                 const int filtered_y = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.y)),
                                                   0, frame->color_height - 1);
+                filtered_tip_pixel = { static_cast<float>(filtered_x), static_cast<float>(filtered_y) };
                 cv::circle(display, { filtered_x, filtered_y }, 5,
                            stabilized_tip->confirmed_this_frame ? cv::Scalar{ 255, 120, 20 }
                                                                   : cv::Scalar{ 160, 160, 160 },
@@ -309,6 +385,9 @@ int main(int argc, char** argv) {
 
             std::optional<aerial_touch::Vec3> raw_xyz;
             const bool confirmed_tip = stabilized_tip.has_value() && stabilized_tip->confirmed_this_frame;
+            if(!confirmed_tip) {
+                filtered_tip_pixel.reset();
+            }
             if(confirmed_tip) {
                 last_confirmed_timestamp_ms = frame->timestamp_ms;
                 const int raw_x = std::clamp(static_cast<int>(std::lround(stabilized_tip->raw.x)),
@@ -359,8 +438,35 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if(collecting_calibration_samples && current_xyz.has_value()) {
-                calibration_collector.add(*current_xyz);
+            if(scanning_surface) {
+                std::vector<aerial_touch::Vec3> samples;
+                if(confirmed_tip && filtered_tip_pixel.has_value()) {
+                    samples = surface_patch_samples(camera, *frame, *filtered_tip_pixel, config.depth.sample_radius);
+                }
+                const auto progress = surface_scan.add(samples, frame->timestamp_ms);
+                if(progress.state == aerial_touch::SurfaceScanState::Complete) {
+                    calibration_surface = surface_scan.surface_plane();
+                    scanning_surface = false;
+                    status = u8"表面掃描完成；將手指移到 1 鍵左上角並按空白鍵開始取樣";
+                }
+                else if(progress.state == aerial_touch::SurfaceScanState::Failed) {
+                    calibration_surface.reset();
+                    scanning_surface = false;
+                    status = u8"表面掃描失敗：周邊深度不足或混入不同平面；請沿鍵盤區域重新掃描";
+                }
+                else {
+                    status = std::string(u8"表面掃描中：已收集 ") + std::to_string(progress.sample_count)
+                             + u8" 個深度樣本；請沿鍵盤區域移動食指";
+                }
+            }
+
+            if(collecting_calibration_samples && calibration_surface.has_value() && confirmed_tip
+               && filtered_tip_pixel.has_value()) {
+                const auto surface_point = surface_point_at_fingertip_pixel(
+                    camera, *frame, *filtered_tip_pixel, *calibration_surface);
+                if(surface_point.has_value()) {
+                    calibration_collector.add(*surface_point);
+                }
                 status = std::string(u8"校正點取樣：") + std::to_string(calibration_collector.sample_count()) + "/"
                          + std::to_string(config.calibration.required_samples) + u8"，請保持不動";
                 const auto sample_result = calibration_collector.result();
@@ -382,20 +488,7 @@ int main(int argc, char** argv) {
                         u8"請移到 4 鍵左下角並按空白鍵開始取樣",
                     };
                     status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
-                    if(calibration_points.size() == 3U) {
-                        calibration_plane = aerial_touch::Plane::from_calibration_points(
-                            calibration_points[0], calibration_points[1], calibration_points[2],
-                            config.calibration.minimum_point_distance_mm);
-                        if(!calibration_plane.has_value()) {
-                            calibration_points.clear();
-                            calibration_spreads.clear();
-                            status = u8"校正失敗：前三個位置太近或接近直線；請從 1 鍵左上角重新取樣";
-                        }
-                        else {
-                            status += std::string(u8"；平面基準已建立；") + next_instructions[2];
-                        }
-                    }
-                    else if(calibration_points.size() < 7U) {
+                    if(calibration_points.size() < 7U) {
                         status += std::string(u8"；") + next_instructions[calibration_points.size() - 1U];
                     }
                     else {
@@ -407,6 +500,9 @@ int main(int argc, char** argv) {
                     collecting_calibration_samples = false;
                     status = u8"校正點散布過大或有效樣本不足，請保持手指不動後按空白鍵重試";
                 }
+            }
+            else if(collecting_calibration_samples && calibration_surface.has_value()) {
+                status = u8"等待有效指尖位置與表面射線後開始收集，請保持手指不動";
             }
 
             if(current_xyz.has_value() && plane.has_value() && keypad.has_value() && !calibrating && confirmed_tip) {
@@ -491,24 +587,39 @@ int main(int argc, char** argv) {
                               5);
                 }
                 text_line(canvas, std::string(u8"觸控：") + (touch.armed() ? u8"可觸發" : u8"等待手指離開"), 6);
-                text_line(canvas,
-                          std::string(u8"校正：") + (calibrating ? u8"進行中 " : (plane ? u8"完成 " : u8"尚未設定 "))
-                              + std::to_string(calibration_points.size()) + "/7",
+                const std::string calibration_state = !calibrating
+                                                          ? (plane ? u8"完成 " : u8"尚未設定 ")
+                                                          : scanning_surface ? u8"表面掃描中 "
+                                                                             : calibration_surface.has_value()
+                                                                                   ? u8"進行中 "
+                                                                                   : u8"等待表面掃描 ";
+                text_line(canvas, std::string(u8"校正：") + calibration_state
+                                      + std::to_string(calibration_points.size()) + "/7",
                           7);
                 text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
-                text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：開始取樣 | Enter：完成校正 | R：重設 | Q/Esc：離開", 9);
+                const auto& surface_progress = surface_scan.progress();
+                if(calibrating && (scanning_surface || calibration_surface.has_value())) {
+                    std::ostringstream surface_text;
+                    surface_text << std::fixed << std::setprecision(1) << u8"表面："
+                                 << (scanning_surface ? u8"掃描中" : u8"已建立") << u8"；樣本 "
+                                 << surface_progress.sample_count << u8"；內點 "
+                                 << surface_progress.quality.inlier_samples << u8"；RMS "
+                                 << surface_progress.quality.rms_residual_mm << u8" mm";
+                    text_line(canvas, surface_text.str(), 9, { 180, 220, 255 });
+                }
+                text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：開始掃描或取樣 | Enter：完成校正 | R：重設 | Q/Esc：離開", 10);
                 if(!camera_info.warnings.empty()) {
-                    text_line(canvas, std::string(u8"相機警告：") + camera_info.warnings.back(), 10,
+                    text_line(canvas, std::string(u8"相機警告：") + camera_info.warnings.back(), 11,
                               { 80, 180, 255 });
                 }
                 if(last_event.has_value()) {
-                    text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 11, { 50, 255, 255 });
+                    text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 12, { 50, 255, 255 });
                 }
                 for(std::size_t index = 0; index < calibration_spreads.size(); ++index) {
                     text_line(canvas,
-                              std::string(u8"校正點 ") + std::to_string(index + 1U) + u8" 散布 XYZ："
+                              std::string(u8"校正點 ") + std::to_string(index + 1U) + u8" 表面 XYZ 散布："
                                   + vec3_text(calibration_spreads[index]),
-                              12 + static_cast<int>(index), { 180, 220, 255 });
+                              13 + static_cast<int>(index), { 180, 220, 255 });
                 }
             }
             settings_window.update_preview({ current_distance, current_uv.has_value() && confirmed_tip,
@@ -528,59 +639,71 @@ int main(int argc, char** argv) {
                 calibration_spreads.clear();
                 calibration_collector.clear();
                 collecting_calibration_samples = false;
+                scanning_surface = false;
+                surface_scan.clear();
+                calibration_surface.reset();
                 plane.reset();
-                calibration_plane.reset();
                 keypad.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
                 sticky_key.reset();
                 active_pressed_key.reset();
-                status = u8"將手指移到 1 鍵左上角，保持不動後按空白鍵開始取樣";
+                status = u8"先沿預計的鍵盤區域移動食指，按空白鍵開始表面掃描";
             }
             else if(key == ' ' && calibrating) {
-                if(collecting_calibration_samples) {
+                if(scanning_surface) {
+                    status = u8"表面掃描正在進行，請沿鍵盤區域移動食指";
+                }
+                else if(!calibration_surface.has_value()) {
+                    surface_scan.begin(frame->timestamp_ms);
+                    scanning_surface = true;
+                    status = u8"表面掃描中：請沿鍵盤區域移動食指，完成後會自動開始 P1 取樣";
+                }
+                else if(collecting_calibration_samples) {
                     status = u8"校正點正在取樣，請保持手指不動";
                 }
                 else if(calibration_points.size() < 7U) {
                     calibration_collector.clear();
                     collecting_calibration_samples = true;
-                    status = current_xyz.has_value() ? u8"開始收集校正樣本，請保持手指不動"
-                                                     : u8"等待有效指尖深度後開始收集，請保持手指不動";
+                    status = confirmed_tip ? u8"開始收集校正樣本，請保持手指不動"
+                                           : u8"等待有效指尖位置後開始收集，請保持手指不動";
                 }
             }
             else if(key == 13 && calibrating) {
-                if(collecting_calibration_samples) {
+                if(scanning_surface) {
+                    status = u8"表面掃描仍在進行，請等待自動完成";
+                }
+                else if(collecting_calibration_samples) {
                     status = u8"校正點仍在取樣，請保持手指不動";
                 }
-                else if(calibration_points.size() != 7U || !calibration_plane.has_value()) {
-                    status = u8"請先依序記錄 7 個鍵盤邊界校正點";
+                else if(calibration_points.size() != 7U || !calibration_surface.has_value()) {
+                    status = u8"請先完成表面掃描，再依序記錄 7 個鍵盤邊界校正點";
                 }
                 else {
                     std::array<aerial_touch::Vec3, 7> points{};
                     std::copy(calibration_points.begin(), calibration_points.end(), points.begin());
-                    const auto result = aerial_touch::calibrate_keypad(
+                    const auto attempt = aerial_touch::calibrate_keypad_detailed(
                         points, config.calibration.minimum_point_distance_mm);
-                    if(result.has_value()) {
-                        plane = result->plane;
-                        keypad.emplace(result->geometry);
-                        calibration_plane.reset();
+                    if(attempt.result.has_value()) {
+                        plane = attempt.result->plane;
+                        keypad.emplace(attempt.result->geometry);
                         calibrating = false;
                         std::ostringstream geometry_status;
                         geometry_status << std::fixed << std::setprecision(1)
-                                        << u8"校正完成：鍵盤 " << result->geometry.total_width_mm << u8" × "
-                                        << result->geometry.total_height_mm << u8" mm；按鍵 "
-                                        << result->geometry.key_width_mm << u8" × "
-                                        << result->geometry.key_height_mm << u8" mm；水平間距 "
-                                        << result->geometry.horizontal_gap_mm << u8" mm；垂直間距 "
-                                        << result->geometry.vertical_gap_mm << u8" mm";
+                                        << u8"校正完成：鍵盤 " << attempt.result->geometry.total_width_mm << u8" × "
+                                        << attempt.result->geometry.total_height_mm << u8" mm；按鍵 "
+                                        << attempt.result->geometry.key_width_mm << u8" × "
+                                        << attempt.result->geometry.key_height_mm << u8" mm；水平間距 "
+                                        << attempt.result->geometry.horizontal_gap_mm << u8" mm；垂直間距 "
+                                        << attempt.result->geometry.vertical_gap_mm << u8" mm";
                         status = geometry_status.str();
                     }
                     else {
                         calibration_points.clear();
                         calibration_spreads.clear();
                         calibration_collector.clear();
-                        calibration_plane.reset();
                         keypad.reset();
-                        status = u8"校正失敗：請確認第 3 點在 0 鍵正下方而非右下角，且第 4～7 點都是格線角點；請從 1 鍵左上角重新取樣";
+                        status = calibration_failure_text(attempt.failure)
+                                 + u8"；表面基準已保留，請從 1 鍵左上角重新取樣";
                     }
                 }
             }
@@ -590,8 +713,10 @@ int main(int argc, char** argv) {
                 calibration_spreads.clear();
                 calibration_collector.clear();
                 collecting_calibration_samples = false;
+                scanning_surface = false;
+                surface_scan.clear();
+                calibration_surface.reset();
                 plane.reset();
-                calibration_plane.reset();
                 keypad.reset();
                 touch = aerial_touch::TouchStateMachine(config.touch);
                 fingertip_stabilizer.reset();
