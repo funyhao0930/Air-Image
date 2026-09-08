@@ -22,6 +22,11 @@ public:
 
     PlanePoint project(Vec3 point) const;
 
+    // Inverse of project(): rebuild the camera-space point that sits at (u, v) on the plane,
+    // offset by signed_distance_mm along the camera-facing normal. Used to draw the calibrated
+    // keypad back onto the physical surface in the video frame.
+    Vec3 unproject(Vec2 uv_mm, float signed_distance_mm = 0.0F) const;
+
 private:
     Plane(Vec3 origin, Vec3 u_axis, Vec3 v_axis, Vec3 normal);
 

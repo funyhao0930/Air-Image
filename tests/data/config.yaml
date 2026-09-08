@@ -11,16 +11,20 @@ depth:
   median_window_size: 5
   max_jump_mm: 80.0
   invalid_reset_frames: 3
+  finger_clearance_mm: 7.5
 fingertip:
   min_cutoff_hz: 1.0
   beta: 0.12
   derivative_cutoff_hz: 1.0
   display_hold_ms: 100
+  depth_probe_near_ratio: 0.30
+  depth_probe_far_ratio: 0.65
 touch:
   touch_threshold_mm: 9.0
   release_threshold_mm: 22.0
   min_approach_velocity_mm_s: 45.0
   tracking_timeout_ms: 275
+  dwell_ms: 420
 keypad:
   key_width_mm: 31.0
   key_height_mm: 32.0

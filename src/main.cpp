@@ -2,6 +2,7 @@
 #include "aerial_touch/calibration_geometry.hpp"
 #include "aerial_touch/calibration_sampler.hpp"
 #include "aerial_touch/depth_sampler.hpp"
+#include "aerial_touch/fingertip_probe.hpp"
 #include "aerial_touch/hand_tracker.hpp"
 #include "aerial_touch/keypad.hpp"
 #include "aerial_touch/keypad_overlay.hpp"
@@ -33,10 +34,13 @@
 namespace {
 
 constexpr int kIndexFingerTip = 8;
+constexpr int kIndexFingerDip = 7;
 constexpr const char* kWindowName = "aerial_touch_window";
 constexpr float kRayNearDepthMm = 400.0F;
 constexpr float kRayFarDepthMm = 1600.0F;
-constexpr std::size_t kMinimumSurfacePatchSamples = 16U;
+// Rejecting the ring pixels that land on the finger removes roughly the near half of each annulus,
+// so the per-frame yield needed to be lowered (and a wider ring added) to keep the scan converging.
+constexpr std::size_t kMinimumSurfacePatchSamples = 8U;
 
 struct CliOptions {
     std::filesystem::path config{ "config/default.yaml" };
@@ -86,16 +90,26 @@ void text_line(aerial_touch::Utf8TextCanvas& canvas,
     canvas.draw(text, { 12, 10 + row * 34 }, color);
 }
 
+// Collect table points from a ring around the fingertip. At typical working distances a finger is
+// only some 12-19 px across, so a ring a few pixels wide sits largely *on the finger*, and that
+// contamination is what starves the plane fit of its required inlier ratio. `minimum_depth_mm` cuts
+// it away: the finger rises off the surface behind the tip, so finger pixels read nearer to the
+// camera than the tip, while table pixels read at the tip's depth or farther -- including when the
+// fingertip is resting on the surface, which is why the cut sits just in front of the tip rather
+// than beyond it. The filter runs inside sample_depth_annulus_mm so the widening-radius retry
+// counts surviving samples, not raw ones.
 std::vector<aerial_touch::Vec3> surface_patch_samples(const aerial_touch::OrbbecCamera& camera,
                                                        const aerial_touch::RgbdFrame& frame,
                                                        const aerial_touch::Vec2 fingertip_pixel,
-                                                       const int depth_sample_radius) {
+                                                       const int depth_sample_radius,
+                                                       const float minimum_depth_mm) {
     const int inner_radius = std::max(2, depth_sample_radius + 1);
     std::vector<aerial_touch::DepthPixelSample> depth_samples;
-    for(const int outer_radius : { inner_radius + 4, inner_radius + 8, inner_radius + 12 }) {
+    for(const int outer_radius : { inner_radius + 4, inner_radius + 8, inner_radius + 12, inner_radius + 20 }) {
         depth_samples = aerial_touch::sample_depth_annulus_mm(
             frame.depth, frame.depth_width, frame.depth_height, static_cast<int>(std::lround(fingertip_pixel.x)),
-            static_cast<int>(std::lround(fingertip_pixel.y)), inner_radius, outer_radius, frame.depth_unit_mm);
+            static_cast<int>(std::lround(fingertip_pixel.y)), inner_radius, outer_radius, frame.depth_unit_mm,
+            minimum_depth_mm);
         if(depth_samples.size() >= kMinimumSurfacePatchSamples) {
             break;
         }
@@ -137,16 +151,8 @@ std::string calibration_failure_text(const aerial_touch::KeypadCalibrationFailur
         return u8"校正失敗：鍵盤表面方向無法建立";
     case aerial_touch::KeypadCalibrationFailure::InvalidDimensions:
         return u8"校正失敗：鍵盤或按鍵尺寸無效";
-    case aerial_touch::KeypadCalibrationFailure::OverlappingKeys:
-        return u8"校正失敗：按鍵尺寸與間距互相重疊";
-    case aerial_touch::KeypadCalibrationFailure::BottomBoundaryOutsideZeroColumn:
-        return u8"校正失敗：P3 未落在 0 鍵正下方欄位";
-    case aerial_touch::KeypadCalibrationFailure::TopBoundaryMismatch:
-        return u8"校正失敗：P2、P4 或 P5 未對齊鍵盤上邊界";
-    case aerial_touch::KeypadCalibrationFailure::LeftBoundaryMismatch:
-        return u8"校正失敗：P6 或 P7 未對齊左側邊界";
-    case aerial_touch::KeypadCalibrationFailure::TotalSizeMismatch:
-        return u8"校正失敗：七點量得的總寬高不符合 3×4 比例";
+    case aerial_touch::KeypadCalibrationFailure::BottomPointOutsideKeypad:
+        return u8"校正失敗：P3 未落在鍵盤下緣範圍內";
     case aerial_touch::KeypadCalibrationFailure::None:
         return u8"校正失敗：未知的鍵盤幾何錯誤";
     }
@@ -198,6 +204,98 @@ void draw_keypad(cv::Mat& image,
         cv::rectangle(image, rect, color, filled ? -1 : 2);
         cv::putText(image, region.key, { rect.x + rect.width / 3, rect.y + 2 * rect.height / 3 },
                     cv::FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2, cv::LINE_AA);
+    }
+}
+
+// Draw the calibrated keypad where it physically is, by pushing each key's plane-space corners back
+// through the same camera model the touch distances use. Without this the keypad is invisible in the
+// world *and* absent from the video, so the operator is aiming at a remembered rectangle; with it, a
+// wrong calibration or wrong intrinsics show up immediately as an overlay that does not sit on the
+// target.
+void draw_table_keypad(cv::Mat& image,
+                       const aerial_touch::OrbbecCamera& camera,
+                       const aerial_touch::RgbdFrame& frame,
+                       const aerial_touch::Plane& plane,
+                       const aerial_touch::Keypad& keypad,
+                       const std::optional<std::string>& hovered_key,
+                       const std::optional<std::string>& pressed_key) {
+    // A plane seen almost edge-on projects its far corners to enormous coordinates; clamping the
+    // magnitude keeps the float -> int conversion defined instead of relying on the calibration
+    // always being sane. OpenCV clips the drawing itself.
+    constexpr float kMaximumDrawablePixel = 20000.0F;
+
+    struct DrawableKey {
+        std::string key;
+        std::vector<cv::Point> polygon;
+        cv::Point centre;
+        cv::Scalar color;
+        aerial_touch::KeypadKeyVisualState state;
+    };
+
+    std::vector<DrawableKey> drawable;
+    drawable.reserve(keypad.regions().size());
+    for(const auto& region : keypad.regions()) {
+        const std::array<aerial_touch::Vec2, 4> corners{ {
+            { region.u_min_mm, region.v_min_mm },
+            { region.u_max_mm, region.v_min_mm },
+            { region.u_max_mm, region.v_max_mm },
+            { region.u_min_mm, region.v_max_mm },
+        } };
+
+        std::vector<cv::Point> polygon;
+        polygon.reserve(corners.size());
+        for(const auto corner : corners) {
+            const auto pixel = camera.project(frame, plane.unproject(corner));
+            if(!pixel.has_value() || std::fabs(pixel->x) > kMaximumDrawablePixel
+               || std::fabs(pixel->y) > kMaximumDrawablePixel) {
+                break;
+            }
+            polygon.push_back({ static_cast<int>(std::lround(pixel->x)),
+                                static_cast<int>(std::lround(pixel->y)) });
+        }
+        if(polygon.size() != corners.size()) {
+            continue;
+        }
+
+        cv::Point centre{ 0, 0 };
+        for(const auto& point : polygon) {
+            centre.x += point.x;
+            centre.y += point.y;
+        }
+        centre.x /= static_cast<int>(polygon.size());
+        centre.y /= static_cast<int>(polygon.size());
+
+        const auto state = aerial_touch::keypad_key_visual_state(region.key, hovered_key, pressed_key);
+        const cv::Scalar color = state == aerial_touch::KeypadKeyVisualState::Pressed
+                                     ? cv::Scalar{ 80, 210, 80 }
+                                     : state == aerial_touch::KeypadKeyVisualState::Hover
+                                           ? cv::Scalar{ 20, 220, 255 }
+                                           : cv::Scalar{ 210, 190, 90 };
+        drawable.push_back({ region.key, std::move(polygon), centre, color, state });
+    }
+
+    // One clone and one blend for the whole overlay: cloning per key would copy the full frame up to
+    // ten times every frame.
+    const bool any_highlight = std::any_of(drawable.begin(), drawable.end(), [](const DrawableKey& key) {
+        return key.state != aerial_touch::KeypadKeyVisualState::Idle;
+    });
+    if(any_highlight) {
+        cv::Mat highlight = image.clone();
+        for(const auto& key : drawable) {
+            if(key.state != aerial_touch::KeypadKeyVisualState::Idle) {
+                cv::fillConvexPoly(highlight, key.polygon.data(), static_cast<int>(key.polygon.size()),
+                                   key.color, cv::LINE_AA);
+            }
+        }
+        cv::addWeighted(highlight, 0.35, image, 0.65, 0.0, image);
+    }
+
+    for(const auto& key : drawable) {
+        cv::polylines(image, key.polygon, true, key.color,
+                      key.state == aerial_touch::KeypadKeyVisualState::Idle ? 1 : 2, cv::LINE_AA);
+        const cv::Point label{ key.centre.x - 7, key.centre.y + 7 };
+        cv::putText(image, key.key, label, cv::FONT_HERSHEY_SIMPLEX, 0.6, { 0, 0, 0 }, 3, cv::LINE_AA);
+        cv::putText(image, key.key, label, cv::FONT_HERSHEY_SIMPLEX, 0.6, key.color, 1, cv::LINE_AA);
     }
 }
 
@@ -384,6 +482,9 @@ int main(int argc, char** argv) {
             }
 
             std::optional<aerial_touch::Vec3> raw_xyz;
+            std::optional<float> tip_depth_mm;
+            bool tip_depth_extrapolated = false;
+            bool tip_depth_probed = false;
             const bool confirmed_tip = stabilized_tip.has_value() && stabilized_tip->confirmed_this_frame;
             if(!confirmed_tip) {
                 filtered_tip_pixel.reset();
@@ -398,27 +499,81 @@ int main(int argc, char** argv) {
                                                   0, frame->color_width - 1);
                 const int filtered_y = std::clamp(static_cast<int>(std::lround(stabilized_tip->filtered.y)),
                                                   0, frame->color_height - 1);
-                const auto raw_depth_mm = aerial_touch::sample_depth_median_mm(
+                const auto raw_tip_depth_mm = aerial_touch::sample_depth_median_mm(
                     frame->raw_depth, frame->depth_width, frame->depth_height, raw_x, raw_y,
                     config.depth.sample_radius, frame->depth_unit_mm);
-                const auto sdk_depth_mm = aerial_touch::sample_depth_median_mm(
-                    frame->depth, frame->depth_width, frame->depth_height, filtered_x, filtered_y,
-                    config.depth.sample_radius, frame->depth_unit_mm);
+                // Landmark 8 sits on the finger's silhouette edge, where the depth ROI straddles
+                // finger and table. Probe back along the finger towards the DIP joint instead,
+                // where the finger is solid, and extrapolate the depth gradient forward to the tip.
+                // The tip *pixel* still decides the key; only the range comes from the probes.
+                const aerial_touch::Vec2 filtered_tip{ static_cast<float>(filtered_x),
+                                                       static_cast<float>(filtered_y) };
+                aerial_touch::Vec2 joint_pixel = filtered_tip;
+                if(hand.landmark_count > kIndexFingerDip && std::isfinite(hand.landmarks[kIndexFingerDip].x)
+                   && std::isfinite(hand.landmarks[kIndexFingerDip].y)) {
+                    // Take the tip->joint offset from the raw landmarks but anchor it on the
+                    // filtered tip, so the probe is as steady as the point it is derived from.
+                    const float joint_x = hand.landmarks[kIndexFingerDip].x
+                                          * static_cast<float>(frame->color_width);
+                    const float joint_y = hand.landmarks[kIndexFingerDip].y
+                                          * static_cast<float>(frame->color_height);
+                    joint_pixel = { filtered_tip.x + (joint_x - stabilized_tip->raw.x),
+                                    filtered_tip.y + (joint_y - stabilized_tip->raw.y) };
+                }
+
+                const aerial_touch::FingertipDepthProbeConfig probe_config{
+                    config.fingertip.depth_probe_near_ratio, config.fingertip.depth_probe_far_ratio, 40.0F, 4.0F
+                };
+                const auto probe = aerial_touch::estimate_fingertip_depth_mm(
+                    filtered_tip, joint_pixel, probe_config,
+                    [&](const aerial_touch::Vec2 pixel) -> std::optional<float> {
+                        const int probe_x = static_cast<int>(std::lround(pixel.x));
+                        const int probe_y = static_cast<int>(std::lround(pixel.y));
+                        // Reject rather than clamp: a hand at the edge of the frame can push the
+                        // joint probe off-image, and clamping would silently substitute a border
+                        // pixel's depth -- some unrelated part of the scene -- for the finger's.
+                        if(probe_x < 0 || probe_y < 0 || probe_x >= frame->depth_width
+                           || probe_y >= frame->depth_height) {
+                            return std::nullopt;
+                        }
+                        return aerial_touch::sample_depth_median_mm(
+                            frame->depth, frame->depth_width, frame->depth_height, probe_x, probe_y,
+                            config.depth.sample_radius, frame->depth_unit_mm);
+                    });
+                const std::optional<float> sdk_depth_mm =
+                    probe.has_value() ? std::optional<float>{ probe->depth_mm } : std::nullopt;
+                tip_depth_probed = probe.has_value();
+                tip_depth_extrapolated = probe.has_value() && probe->extrapolated;
+
+                // Gate liveness on the unfiltered depth at the probe location, not at the tip. The
+                // tip pixel is exactly where the sensor drops out (silhouette edge), so gating there
+                // would keep resetting the stabiliser on frames whose probe depth was perfectly good.
+                std::optional<float> raw_depth_mm = raw_tip_depth_mm;
+                if(probe.has_value()) {
+                    const int gate_x = std::clamp(static_cast<int>(std::lround(probe->near_pixel.x)), 0,
+                                                  frame->depth_width - 1);
+                    const int gate_y = std::clamp(static_cast<int>(std::lround(probe->near_pixel.y)), 0,
+                                                  frame->depth_height - 1);
+                    raw_depth_mm = aerial_touch::sample_depth_median_mm(
+                        frame->raw_depth, frame->depth_width, frame->depth_height, gate_x, gate_y,
+                        config.depth.sample_radius, frame->depth_unit_mm);
+                }
                 if(raw_depth_freshness.update(raw_depth_mm)) {
                     const auto stable_depth_mm = depth_stabilizer.update(sdk_depth_mm);
                     if(stable_depth_mm.has_value()) {
-                        current_xyz = camera.deproject(
-                            *frame, { static_cast<float>(filtered_x), static_cast<float>(filtered_y) },
-                            *stable_depth_mm);
+                        tip_depth_mm = stable_depth_mm;
+                        current_xyz = camera.deproject(*frame, filtered_tip, *stable_depth_mm);
                     }
                 }
                 else {
                     depth_stabilizer.reset();
                     camera.reset_depth_filters();
                 }
-                if(raw_depth_mm.has_value()) {
+                // The HUD's "原始" distance stays a genuine unfiltered reading at the tip, so it is
+                // still a useful comparison against the probed and filtered value beside it.
+                if(raw_tip_depth_mm.has_value()) {
                     raw_xyz = camera.deproject(*frame, { static_cast<float>(raw_x), static_cast<float>(raw_y) },
-                                               *raw_depth_mm);
+                                               *raw_tip_depth_mm);
                 }
             }
             else {
@@ -440,8 +595,17 @@ int main(int argc, char** argv) {
 
             if(scanning_surface) {
                 std::vector<aerial_touch::Vec3> samples;
-                if(confirmed_tip && filtered_tip_pixel.has_value()) {
-                    samples = surface_patch_samples(camera, *frame, *filtered_tip_pixel, config.depth.sample_radius);
+                if(confirmed_tip && filtered_tip_pixel.has_value() && tip_depth_mm.has_value()) {
+                    // Anchor the cut just *in front of* the fingertip, not beyond it. The finger
+                    // rises away from the surface behind the tip, so its pixels read nearer to the
+                    // camera than the tip does, while table pixels read at the tip's depth or
+                    // farther. Requiring the table to be some margin beyond the tip would collect
+                    // nothing at all whenever the finger is resting on the surface -- which is
+                    // exactly how the guide tells the operator to run the sweep.
+                    const float finger_cut_mm =
+                        std::max(0.0F, *tip_depth_mm - config.depth.finger_clearance_mm);
+                    samples = surface_patch_samples(camera, *frame, *filtered_tip_pixel, config.depth.sample_radius,
+                                                    finger_cut_mm);
                 }
                 const auto progress = surface_scan.add(samples, frame->timestamp_ms);
                 if(progress.state == aerial_touch::SurfaceScanState::Complete) {
@@ -475,20 +639,16 @@ int main(int argc, char** argv) {
                     calibration_spreads.push_back(sample_result->spread);
                     calibration_collector.clear();
                     collecting_calibration_samples = false;
-                    static constexpr std::array<const char*, 7> names{
+                    static constexpr std::array<const char*, aerial_touch::kKeypadCalibrationPointCount> names{
                         u8"1 鍵左上角", u8"3 鍵右上角", u8"0 鍵正下方",
-                        u8"1 鍵右上角", u8"2 鍵右上角", u8"1 鍵左下角", u8"4 鍵左下角",
                     };
-                    static constexpr std::array<const char*, 6> next_instructions{
-                        u8"請移到 3 鍵右上角並按空白鍵開始取樣",
-                        u8"請移到 0 鍵正下方並按空白鍵開始取樣",
-                        u8"請移到 1 鍵右上角並按空白鍵開始取樣",
-                        u8"請移到 2 鍵右上角並按空白鍵開始取樣",
-                        u8"請移到 1 鍵左下角並按空白鍵開始取樣",
-                        u8"請移到 4 鍵左下角並按空白鍵開始取樣",
-                    };
+                    static constexpr std::array<const char*, aerial_touch::kKeypadCalibrationPointCount - 1U>
+                        next_instructions{
+                            u8"請移到 3 鍵右上角並按空白鍵開始取樣",
+                            u8"請移到 0 鍵正下方並按空白鍵開始取樣",
+                        };
                     status = std::string(u8"已記錄 ") + names[calibration_points.size() - 1U];
-                    if(calibration_points.size() < 7U) {
+                    if(calibration_points.size() < aerial_touch::kKeypadCalibrationPointCount) {
                         status += std::string(u8"；") + next_instructions[calibration_points.size() - 1U];
                     }
                     else {
@@ -556,6 +716,9 @@ int main(int argc, char** argv) {
             active_pressed_key = aerial_touch::currently_pressed_key(
                 active_pressed_key, touch.armed(), current_uv.has_value() && confirmed_tip, calibrating, current_key);
             const std::optional<std::string> pressed_key = active_pressed_key;
+            if(plane.has_value() && keypad.has_value() && !calibrating) {
+                draw_table_keypad(display, camera, *frame, *plane, *keypad, current_key, pressed_key);
+            }
             draw_keypad(display, keypad.has_value(), current_key, pressed_key);
             {
                 aerial_touch::Utf8TextCanvas canvas(display);
@@ -586,7 +749,27 @@ int main(int argc, char** argv) {
                                           + u8" | 按鍵：" + current_key.value_or("-"),
                               5);
                 }
-                text_line(canvas, std::string(u8"觸控：") + (touch.armed() ? u8"可觸發" : u8"等待手指離開"), 6);
+                std::string touch_text = std::string(u8"觸控：")
+                                         + (touch.armed() ? u8"可觸發" : u8"等待手指離開");
+                if(touch.approach_latched()) {
+                    touch_text += u8" | 接近速度已達標";
+                }
+                else if(config.touch.dwell_ms > 0) {
+                    const auto dwell = touch.dwell_elapsed_ms(frame->timestamp_ms);
+                    if(dwell.has_value()) {
+                        touch_text += u8" | 停留 " + std::to_string(*dwell) + "/"
+                                      + std::to_string(config.touch.dwell_ms) + " ms";
+                    }
+                }
+                // Three states, not two: saying "single-point probe" when no probe succeeded would
+                // assert a measurement that never happened.
+                if(confirmed_tip && tip_depth_probed) {
+                    touch_text += tip_depth_extrapolated ? u8" | 深度：指節外推" : u8" | 深度：單點探測";
+                }
+                else if(confirmed_tip) {
+                    touch_text += u8" | 深度：探測失敗";
+                }
+                text_line(canvas, touch_text, 6);
                 const std::string calibration_state = !calibrating
                                                           ? (plane ? u8"完成 " : u8"尚未設定 ")
                                                           : scanning_surface ? u8"表面掃描中 "
@@ -594,7 +777,8 @@ int main(int argc, char** argv) {
                                                                                    ? u8"進行中 "
                                                                                    : u8"等待表面掃描 ";
                 text_line(canvas, std::string(u8"校正：") + calibration_state
-                                      + std::to_string(calibration_points.size()) + "/7",
+                                      + std::to_string(calibration_points.size()) + "/"
+                                      + std::to_string(aerial_touch::kKeypadCalibrationPointCount),
                           7);
                 text_line(canvas, std::string(u8"狀態：") + status, 8, { 80, 230, 255 });
                 const auto& surface_progress = surface_scan.progress();
@@ -615,11 +799,19 @@ int main(int argc, char** argv) {
                 if(last_event.has_value()) {
                     text_line(canvas, std::string(u8"最近按鍵：") + last_event->key, 12, { 50, 255, 255 });
                 }
-                for(std::size_t index = 0; index < calibration_spreads.size(); ++index) {
-                    text_line(canvas,
-                              std::string(u8"校正點 ") + std::to_string(index + 1U) + u8" 表面 XYZ 散布："
-                                  + vec3_text(calibration_spreads[index]),
-                              13 + static_cast<int>(index), { 180, 220, 255 });
+                // One compact line instead of one row per point: at 480p the old layout started at
+                // row 13 (y = 452) and every spread readout fell off the bottom of the frame, so the
+                // operator never saw the numbers that tell them whether a point was steady enough.
+                if(!calibration_spreads.empty()) {
+                    std::ostringstream spread_text;
+                    spread_text << std::fixed << std::setprecision(1) << u8"校正散布（最大軸）：";
+                    for(std::size_t index = 0; index < calibration_spreads.size(); ++index) {
+                        const auto& spread = calibration_spreads[index];
+                        const float widest = std::max({ spread.x, spread.y, spread.z });
+                        spread_text << (index == 0U ? "" : " / ") << "P" << (index + 1U) << " " << widest;
+                    }
+                    spread_text << " mm";
+                    text_line(canvas, spread_text.str(), 13, { 180, 220, 255 });
                 }
             }
             settings_window.update_preview({ current_distance, current_uv.has_value() && confirmed_tip,
@@ -661,7 +853,7 @@ int main(int argc, char** argv) {
                 else if(collecting_calibration_samples) {
                     status = u8"校正點正在取樣，請保持手指不動";
                 }
-                else if(calibration_points.size() < 7U) {
+                else if(calibration_points.size() < aerial_touch::kKeypadCalibrationPointCount) {
                     calibration_collector.clear();
                     collecting_calibration_samples = true;
                     status = confirmed_tip ? u8"開始收集校正樣本，請保持手指不動"
@@ -675,11 +867,12 @@ int main(int argc, char** argv) {
                 else if(collecting_calibration_samples) {
                     status = u8"校正點仍在取樣，請保持手指不動";
                 }
-                else if(calibration_points.size() != 7U || !calibration_surface.has_value()) {
-                    status = u8"請先完成表面掃描，再依序記錄 7 個鍵盤邊界校正點";
+                else if(calibration_points.size() != aerial_touch::kKeypadCalibrationPointCount
+                        || !calibration_surface.has_value()) {
+                    status = u8"請先完成表面掃描，再依序記錄 3 個鍵盤邊界校正點";
                 }
                 else {
-                    std::array<aerial_touch::Vec3, 7> points{};
+                    std::array<aerial_touch::Vec3, aerial_touch::kKeypadCalibrationPointCount> points{};
                     std::copy(calibration_points.begin(), calibration_points.end(), points.begin());
                     const auto attempt = aerial_touch::calibrate_keypad_detailed(
                         points, config.calibration.minimum_point_distance_mm);
@@ -692,9 +885,7 @@ int main(int argc, char** argv) {
                                         << u8"校正完成：鍵盤 " << attempt.result->geometry.total_width_mm << u8" × "
                                         << attempt.result->geometry.total_height_mm << u8" mm；按鍵 "
                                         << attempt.result->geometry.key_width_mm << u8" × "
-                                        << attempt.result->geometry.key_height_mm << u8" mm；水平間距 "
-                                        << attempt.result->geometry.horizontal_gap_mm << u8" mm；垂直間距 "
-                                        << attempt.result->geometry.vertical_gap_mm << u8" mm";
+                                        << attempt.result->geometry.key_height_mm << u8" mm（按鍵相連無間隙）";
                         status = geometry_status.str();
                     }
                     else {

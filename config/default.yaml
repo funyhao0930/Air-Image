@@ -12,18 +12,26 @@ depth:
   median_window_size: 5
   max_jump_mm: 80.0
   invalid_reset_frames: 3
+  # 表面掃描時,比指尖再近超過這個距離的樣本視為手指而捨棄。手指從指尖往後是往上抬離桌面的,
+  # 所以手指像素比指尖更靠近相機;桌面像素則與指尖同深或更遠,指尖貼著桌面時也成立。
+  finger_clearance_mm: 3.0
 
 fingertip:
   min_cutoff_hz: 1.0
   beta: 0.12
   derivative_cutoff_hz: 1.0
   display_hold_ms: 100
+  # 深度探測點落在「指尖 -> 食指 DIP 關節」連線上的比例;指尖本身位於輪廓邊緣,深度不可靠。
+  depth_probe_near_ratio: 0.35
+  depth_probe_far_ratio: 0.70
 
 touch:
   touch_threshold_mm: 10.0
   release_threshold_mm: 20.0
   min_approach_velocity_mm_s: 40.0
   tracking_timeout_ms: 300
+  # 停留在觸控門檻內達此時間即觸發,補足接近速度不足的慢速按壓;設為 0 可關閉。
+  dwell_ms: 350
 
 keypad:
   boundary_hysteresis_mm: 2.0

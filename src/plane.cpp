@@ -78,4 +78,15 @@ PlanePoint Plane::project(const Vec3 point) const {
     return { dot(relative, u_axis_), dot(relative, v_axis_), dot(relative, normal_) };
 }
 
+Vec3 Plane::unproject(const Vec2 uv_mm, const float signed_distance_mm) const {
+    const Vec3 along_u = scale(u_axis_, uv_mm.x);
+    const Vec3 along_v = scale(v_axis_, uv_mm.y);
+    const Vec3 along_normal = scale(normal_, signed_distance_mm);
+    return {
+        origin_.x + along_u.x + along_v.x + along_normal.x,
+        origin_.y + along_u.y + along_v.y + along_normal.y,
+        origin_.z + along_u.z + along_v.z + along_normal.z,
+    };
+}
+
 }  // namespace aerial_touch

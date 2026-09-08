@@ -6,36 +6,28 @@
 namespace aerial_touch {
 namespace {
 
-constexpr std::size_t kOriginPoint = 0U;
-constexpr std::size_t kRightBoundaryPoint = 1U;
-constexpr std::size_t kBottomBoundaryPoint = 2U;
-constexpr std::size_t kFirstKeyRightPoint = 3U;
-constexpr std::size_t kSecondKeyRightPoint = 4U;
-constexpr std::size_t kFirstKeyBottomPoint = 5U;
-constexpr std::size_t kSecondRowBottomPoint = 6U;
 constexpr float kMinimumDimensionMm = 0.001F;
-constexpr float kCornerPlacementToleranceRatio = 0.30F;
+// The bottom point is aimed below key "0", i.e. the horizontal middle of the keypad. Half a key
+// width of slack on each side still catches a grossly mis-aimed point without being fussy about
+// a few millimetres of pointing error.
+constexpr float kBottomPointSlackRatio = 0.5F;
 
 bool finite(const PlanePoint point) {
     return std::isfinite(point.u_mm) && std::isfinite(point.v_mm) && std::isfinite(point.signed_distance_mm);
 }
 
-bool close_enough(const float actual, const float expected, const float tolerance) {
-    return std::fabs(actual - expected) <= tolerance;
-}
-
 }  // namespace
 
 KeypadCalibrationAttempt calibrate_keypad_detailed(
-    const std::array<Vec3, 7>& points,
+    const std::array<Vec3, kKeypadCalibrationPointCount>& points,
     const float minimum_point_distance_mm) {
-    const auto plane = Plane::from_calibration_points(points[kOriginPoint], points[kRightBoundaryPoint],
-                                                       points[kBottomBoundaryPoint], minimum_point_distance_mm);
+    const auto plane = Plane::from_calibration_points(points[kKeypadOriginPoint], points[kKeypadTopRightPoint],
+                                                      points[kKeypadBottomPoint], minimum_point_distance_mm);
     if(!plane.has_value()) {
         return { std::nullopt, KeypadCalibrationFailure::InvalidPlane };
     }
 
-    std::array<PlanePoint, 7> projected{};
+    std::array<PlanePoint, kKeypadCalibrationPointCount> projected{};
     for(std::size_t index = 0; index < points.size(); ++index) {
         projected[index] = plane->project(points[index]);
         if(!finite(projected[index])) {
@@ -43,62 +35,37 @@ KeypadCalibrationAttempt calibrate_keypad_detailed(
         }
     }
 
-    const float total_width = projected[kRightBoundaryPoint].u_mm;
-    const float total_height = projected[kBottomBoundaryPoint].v_mm;
-    const float key_width = projected[kFirstKeyRightPoint].u_mm;
-    const float horizontal_pitch = projected[kSecondKeyRightPoint].u_mm - key_width;
-    const float raw_horizontal_gap = horizontal_pitch - key_width;
-    const float key_height = projected[kFirstKeyBottomPoint].v_mm;
-    const float vertical_pitch = projected[kSecondRowBottomPoint].v_mm - key_height;
-    const float raw_vertical_gap = vertical_pitch - key_height;
-
-    if(!std::isfinite(total_width) || !std::isfinite(total_height) || !std::isfinite(key_width)
-       || !std::isfinite(horizontal_pitch) || !std::isfinite(raw_horizontal_gap) || !std::isfinite(key_height)
-       || !std::isfinite(vertical_pitch) || !std::isfinite(raw_vertical_gap)
-       || total_width <= kMinimumDimensionMm || total_height <= kMinimumDimensionMm
-       || key_width <= kMinimumDimensionMm || key_height <= kMinimumDimensionMm
-       || horizontal_pitch <= kMinimumDimensionMm || vertical_pitch <= kMinimumDimensionMm) {
+    // The plane is built so that the origin projects to (0, 0), the top-right point lies on the
+    // +u axis, and the bottom point's v component is its orthogonal distance from the top edge.
+    const float total_width  = projected[kKeypadTopRightPoint].u_mm;
+    const float total_height = projected[kKeypadBottomPoint].v_mm;
+    if(!std::isfinite(total_width) || !std::isfinite(total_height) || total_width <= kMinimumDimensionMm
+       || total_height <= kMinimumDimensionMm) {
         return { std::nullopt, KeypadCalibrationFailure::InvalidDimensions };
     }
 
-    const float tolerance = std::max(5.0F, kCornerPlacementToleranceRatio * std::min(key_width, key_height));
-    if(raw_horizontal_gap < -tolerance || raw_vertical_gap < -tolerance) {
-        return { std::nullopt, KeypadCalibrationFailure::OverlappingKeys };
+    const float key_width  = total_width / 3.0F;
+    const float key_height = total_height / 4.0F;
+    if(!std::isfinite(key_width) || !std::isfinite(key_height) || key_width <= kMinimumDimensionMm
+       || key_height <= kMinimumDimensionMm) {
+        return { std::nullopt, KeypadCalibrationFailure::InvalidDimensions };
     }
 
-    const float horizontal_gap = std::max(0.0F, raw_horizontal_gap);
-    const float vertical_gap = std::max(0.0F, raw_vertical_gap);
-    const float zero_column_left = key_width + horizontal_gap;
-    const float zero_column_right = zero_column_left + key_width;
-    const bool bottom_boundary_is_below_zero_column =
-        projected[kBottomBoundaryPoint].u_mm >= zero_column_left - tolerance
-        && projected[kBottomBoundaryPoint].u_mm <= zero_column_right + tolerance;
-    if(!bottom_boundary_is_below_zero_column) {
-        return { std::nullopt, KeypadCalibrationFailure::BottomBoundaryOutsideZeroColumn };
-    }
-    if(!close_enough(projected[kRightBoundaryPoint].v_mm, 0.0F, tolerance)
-       || !close_enough(projected[kFirstKeyRightPoint].v_mm, 0.0F, tolerance)
-       || !close_enough(projected[kSecondKeyRightPoint].v_mm, 0.0F, tolerance)) {
-        return { std::nullopt, KeypadCalibrationFailure::TopBoundaryMismatch };
-    }
-    if(!close_enough(projected[kFirstKeyBottomPoint].u_mm, 0.0F, tolerance)
-       || !close_enough(projected[kSecondRowBottomPoint].u_mm, 0.0F, tolerance)) {
-        return { std::nullopt, KeypadCalibrationFailure::LeftBoundaryMismatch };
-    }
-    if(!close_enough(total_width, 3.0F * key_width + 2.0F * horizontal_gap, tolerance)
-       || !close_enough(total_height, 4.0F * key_height + 3.0F * vertical_gap, tolerance)) {
-        return { std::nullopt, KeypadCalibrationFailure::TotalSizeMismatch };
+    const float slack = key_width * kBottomPointSlackRatio;
+    const float bottom_u = projected[kKeypadBottomPoint].u_mm;
+    if(bottom_u < -slack || bottom_u > total_width + slack) {
+        return { std::nullopt, KeypadCalibrationFailure::BottomPointOutsideKeypad };
     }
 
     return { KeypadCalibrationResult{
                  *plane,
-                 { total_width, total_height, key_width, key_height, horizontal_gap, vertical_gap },
+                 { total_width, total_height, key_width, key_height, 0.0F, 0.0F },
              },
              KeypadCalibrationFailure::None };
 }
 
 std::optional<KeypadCalibrationResult> calibrate_keypad(
-    const std::array<Vec3, 7>& points,
+    const std::array<Vec3, kKeypadCalibrationPointCount>& points,
     const float minimum_point_distance_mm) {
     return calibrate_keypad_detailed(points, minimum_point_distance_mm).result;
 }

@@ -22,7 +22,9 @@ add_library(aerial_touch_core STATIC
     src/app_config.cpp
     src/calibration_geometry.cpp
     src/calibration_sampler.cpp
+    src/camera_projection.cpp
     src/depth_sampler.cpp
+    src/fingertip_probe.cpp
     src/plane.cpp
     src/keypad.cpp
     src/keypad_overlay.cpp

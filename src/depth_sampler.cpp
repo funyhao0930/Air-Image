@@ -62,9 +62,11 @@ std::vector<DepthPixelSample> sample_depth_annulus_mm(
     const int pixel_y,
     const int inner_radius,
     const int outer_radius,
-    const float depth_unit_mm) {
+    const float depth_unit_mm,
+    const float minimum_depth_mm) {
     if(width <= 0 || height <= 0 || inner_radius < 0 || outer_radius <= inner_radius
-       || !std::isfinite(depth_unit_mm) || depth_unit_mm <= 0.0F
+       || !std::isfinite(depth_unit_mm) || depth_unit_mm <= 0.0F || !std::isfinite(minimum_depth_mm)
+       || minimum_depth_mm < 0.0F
        || depth_values.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) {
         return {};
     }
@@ -91,9 +93,14 @@ std::vector<DepthPixelSample> sample_depth_annulus_mm(
             }
             const std::uint16_t raw_depth = depth_values[static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
                                                          + static_cast<std::size_t>(x)];
-            if(raw_depth != 0U) {
-                samples.push_back({ x, y, static_cast<float>(raw_depth) * depth_unit_mm });
+            if(raw_depth == 0U) {
+                continue;
             }
+            const float depth_mm = static_cast<float>(raw_depth) * depth_unit_mm;
+            if(depth_mm < minimum_depth_mm) {
+                continue;
+            }
+            samples.push_back({ x, y, depth_mm });
         }
     }
     return samples;

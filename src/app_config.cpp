@@ -45,6 +45,13 @@ void validate_app_config(const AppConfig& config) {
        || !std::isfinite(config.fingertip.beta) || config.fingertip.beta < 0.0F
        || !std::isfinite(config.fingertip.derivative_cutoff_hz)
        || config.fingertip.derivative_cutoff_hz <= 0.0F || config.fingertip.display_hold_ms < 0
+       || !std::isfinite(config.depth.finger_clearance_mm) || config.depth.finger_clearance_mm < 0.0F
+       || !std::isfinite(config.fingertip.depth_probe_near_ratio)
+       || !std::isfinite(config.fingertip.depth_probe_far_ratio)
+       || config.fingertip.depth_probe_near_ratio <= 0.0F
+       || config.fingertip.depth_probe_far_ratio <= config.fingertip.depth_probe_near_ratio
+       || config.fingertip.depth_probe_far_ratio > 1.0F
+       || config.touch.dwell_ms < 0
        || !std::isfinite(config.touch.touch_threshold_mm)
        || !std::isfinite(config.touch.release_threshold_mm)
        || !std::isfinite(config.touch.min_approach_velocity_mm_s)
@@ -88,6 +95,8 @@ AppConfig load_app_config(const std::filesystem::path& path) {
     config.depth.max_jump_mm = optional_value<float>(root, "depth", "max_jump_mm", config.depth.max_jump_mm);
     config.depth.invalid_reset_frames =
         optional_value<std::size_t>(root, "depth", "invalid_reset_frames", config.depth.invalid_reset_frames);
+    config.depth.finger_clearance_mm =
+        optional_value<float>(root, "depth", "finger_clearance_mm", config.depth.finger_clearance_mm);
     config.fingertip.min_cutoff_hz =
         optional_value<float>(root, "fingertip", "min_cutoff_hz", config.fingertip.min_cutoff_hz);
     config.fingertip.beta = optional_value<float>(root, "fingertip", "beta", config.fingertip.beta);
@@ -96,11 +105,16 @@ AppConfig load_app_config(const std::filesystem::path& path) {
                               config.fingertip.derivative_cutoff_hz);
     config.fingertip.display_hold_ms =
         optional_value<std::int64_t>(root, "fingertip", "display_hold_ms", config.fingertip.display_hold_ms);
+    config.fingertip.depth_probe_near_ratio =
+        optional_value<float>(root, "fingertip", "depth_probe_near_ratio", config.fingertip.depth_probe_near_ratio);
+    config.fingertip.depth_probe_far_ratio =
+        optional_value<float>(root, "fingertip", "depth_probe_far_ratio", config.fingertip.depth_probe_far_ratio);
     config.touch.touch_threshold_mm = required_value<float>(root, "touch", "touch_threshold_mm");
     config.touch.release_threshold_mm = required_value<float>(root, "touch", "release_threshold_mm");
     config.touch.min_approach_velocity_mm_s =
         required_value<float>(root, "touch", "min_approach_velocity_mm_s");
     config.touch.tracking_timeout_ms = required_value<std::int64_t>(root, "touch", "tracking_timeout_ms");
+    config.touch.dwell_ms = optional_value<std::int64_t>(root, "touch", "dwell_ms", config.touch.dwell_ms);
     config.keypad.boundary_hysteresis_mm =
         optional_value<float>(root, "keypad", "boundary_hysteresis_mm", config.keypad.boundary_hysteresis_mm);
     config.calibration.minimum_point_distance_mm =
@@ -140,18 +154,22 @@ void save_app_config(const AppConfig& config, const std::filesystem::path& path)
     emitter << YAML::Key << "median_window_size" << YAML::Value << config.depth.median_window_size;
     emitter << YAML::Key << "max_jump_mm" << YAML::Value << config.depth.max_jump_mm;
     emitter << YAML::Key << "invalid_reset_frames" << YAML::Value << config.depth.invalid_reset_frames;
+    emitter << YAML::Key << "finger_clearance_mm" << YAML::Value << config.depth.finger_clearance_mm;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "fingertip" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "min_cutoff_hz" << YAML::Value << config.fingertip.min_cutoff_hz;
     emitter << YAML::Key << "beta" << YAML::Value << config.fingertip.beta;
     emitter << YAML::Key << "derivative_cutoff_hz" << YAML::Value << config.fingertip.derivative_cutoff_hz;
     emitter << YAML::Key << "display_hold_ms" << YAML::Value << config.fingertip.display_hold_ms;
+    emitter << YAML::Key << "depth_probe_near_ratio" << YAML::Value << config.fingertip.depth_probe_near_ratio;
+    emitter << YAML::Key << "depth_probe_far_ratio" << YAML::Value << config.fingertip.depth_probe_far_ratio;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "touch" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "touch_threshold_mm" << YAML::Value << config.touch.touch_threshold_mm;
     emitter << YAML::Key << "release_threshold_mm" << YAML::Value << config.touch.release_threshold_mm;
     emitter << YAML::Key << "min_approach_velocity_mm_s" << YAML::Value << config.touch.min_approach_velocity_mm_s;
     emitter << YAML::Key << "tracking_timeout_ms" << YAML::Value << config.touch.tracking_timeout_ms;
+    emitter << YAML::Key << "dwell_ms" << YAML::Value << config.touch.dwell_ms;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "keypad" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "boundary_hysteresis_mm" << YAML::Value << config.keypad.boundary_hysteresis_mm;

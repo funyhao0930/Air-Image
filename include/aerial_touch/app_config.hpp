@@ -15,6 +15,11 @@ struct DepthSamplingConfig {
     std::size_t median_window_size{ 5U };
     float max_jump_mm{ 80.0F };
     std::size_t invalid_reset_frames{ 3U };
+    // Surface-scan samples more than this far *in front of* the fingertip are treated as finger,
+    // not table. The finger rises away from the surface behind the tip, so its pixels read nearer
+    // to the camera; table pixels read at the tip's depth or farther, including when the fingertip
+    // is resting on the surface.
+    float finger_clearance_mm{ 3.0F };
 };
 
 struct FingertipConfig {
@@ -22,6 +27,10 @@ struct FingertipConfig {
     float beta{ 0.12F };
     float derivative_cutoff_hz{ 1.0F };
     std::int64_t display_hold_ms{ 100 };
+    // Where along the tip -> DIP-joint span the depth probes sit. The tip pixel itself is on the
+    // finger's silhouette edge, so its depth mixes finger and background.
+    float depth_probe_near_ratio{ 0.35F };
+    float depth_probe_far_ratio{ 0.70F };
 };
 
 struct CalibrationConfig {

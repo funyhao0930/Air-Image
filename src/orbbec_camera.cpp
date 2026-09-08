@@ -1,5 +1,6 @@
 #include "aerial_touch/orbbec_camera.hpp"
 #include "aerial_touch/alignment_mode.hpp"
+#include "aerial_touch/camera_projection.hpp"
 
 #include <libobsensor/ObSensor.hpp>
 #include <libobsensor/hpp/Utils.hpp>
@@ -204,6 +205,7 @@ struct OrbbecCamera::Impl {
     std::vector<ActiveDepthFilter> depth_filters;
     bool running{ false };
     bool hardware_alignment{ false };
+    bool reported_intrinsic_mismatch{ false };
     std::string error;
     CameraRuntimeInfo runtime_info;
 };
@@ -218,6 +220,7 @@ bool OrbbecCamera::start(const CameraConfig& requested) {
     stop();
     impl_->error.clear();
     impl_->runtime_info = {};
+    impl_->reported_intrinsic_mismatch = false;
     try {
         impl_->pipeline = std::make_shared<ob::Pipeline>();
         auto device = impl_->pipeline->getDevice();
@@ -603,6 +606,20 @@ std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
         std::copy(std::begin(extrinsic.trans), std::end(extrinsic.trans), frame.depth_to_color.translation_mm.begin());
         frame.profiles_valid = intrinsic.fx > 0.0F && intrinsic.fy > 0.0F;
 
+        // After D2C the depth frame lives in colour pixel space, so its intrinsics must describe an
+        // image of the same size. If they do not, every millimetre the app reports is scaled wrong
+        // and the projected keypad overlay will visibly drift off the physical target. Warn once
+        // rather than refusing the frame -- the overlay makes the symptom obvious either way.
+        if(!impl_->reported_intrinsic_mismatch
+           && (intrinsic.width != frame.depth_width || intrinsic.height != frame.depth_height)) {
+            impl_->reported_intrinsic_mismatch = true;
+            add_warning(impl_->runtime_info,
+                        std::string(u8"深度內參尺寸與對齊後影像不符：內參 ")
+                            + std::to_string(intrinsic.width) + "x" + std::to_string(intrinsic.height)
+                            + u8"，影像 " + std::to_string(frame.depth_width) + "x"
+                            + std::to_string(frame.depth_height) + u8"；毫米量測與鍵盤投影都會偏移");
+        }
+
         if(!frame.valid()) {
             impl_->error = u8"RGB 與已對齊的深度影像沒有共用有效的像素座標";
             return std::nullopt;
@@ -620,23 +637,21 @@ std::optional<RgbdFrame> OrbbecCamera::capture(const std::uint32_t timeout_ms) {
 }
 
 std::optional<Vec3> OrbbecCamera::deproject(const RgbdFrame& frame, const Vec2 pixel, const float depth_mm) const {
-    if(!frame.valid() || depth_mm <= 0.0F || pixel.x < 0.0F || pixel.y < 0.0F
+    if(!frame.valid() || pixel.x < 0.0F || pixel.y < 0.0F
        || pixel.x >= static_cast<float>(frame.depth_width) || pixel.y >= static_cast<float>(frame.depth_height)) {
         return std::nullopt;
     }
+    // Same pinhole model the SDK's transformation2dto3d applies (it takes no distortion parameter,
+    // so the mapping is plain pinhole), but expressed here so that project() below is its exact
+    // inverse and both can be unit-tested without a camera attached.
+    return deproject_pixel(frame.depth_intrinsics, frame.depth_to_color, pixel, depth_mm);
+}
 
-    OBCameraIntrinsic intrinsic{ frame.depth_intrinsics.fx, frame.depth_intrinsics.fy, frame.depth_intrinsics.cx,
-                                 frame.depth_intrinsics.cy, static_cast<std::int16_t>(frame.depth_intrinsics.width),
-                                 static_cast<std::int16_t>(frame.depth_intrinsics.height) };
-    OBExtrinsic extrinsic{};
-    std::copy(frame.depth_to_color.rotation.begin(), frame.depth_to_color.rotation.end(), std::begin(extrinsic.rot));
-    std::copy(frame.depth_to_color.translation_mm.begin(), frame.depth_to_color.translation_mm.end(), std::begin(extrinsic.trans));
-    const OBPoint2f source{ pixel.x, pixel.y };
-    OBPoint3f target{};
-    if(!ob::CoordinateTransformHelper::transformation2dto3d(source, depth_mm, intrinsic, extrinsic, &target)) {
+std::optional<Vec2> OrbbecCamera::project(const RgbdFrame& frame, const Vec3 point_mm) const {
+    if(!frame.valid()) {
         return std::nullopt;
     }
-    return Vec3{ target.x, target.y, target.z };
+    return project_point(frame.depth_intrinsics, frame.depth_to_color, point_mm);
 }
 
 bool OrbbecCamera::running() const {

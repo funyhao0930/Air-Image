@@ -41,6 +41,11 @@ public:
     std::optional<RgbdFrame> capture(std::uint32_t timeout_ms = 100);
     std::optional<Vec3> deproject(const RgbdFrame& frame, Vec2 pixel, float depth_mm) const;
 
+    // Exact inverse of deproject(): where a camera-space point lands in the colour image.
+    // Used to draw the calibrated keypad onto the physical surface, so the overlay and the touch
+    // distances always share one camera model.
+    std::optional<Vec2> project(const RgbdFrame& frame, Vec3 point_mm) const;
+
     bool running() const;
     bool hardware_alignment() const;
     const CameraRuntimeInfo& runtime_info() const;
