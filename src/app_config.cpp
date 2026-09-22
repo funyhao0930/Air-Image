@@ -46,6 +46,10 @@ void validate_app_config(const AppConfig& config) {
        || !std::isfinite(config.fingertip.derivative_cutoff_hz)
        || config.fingertip.derivative_cutoff_hz <= 0.0F || config.fingertip.display_hold_ms < 0
        || !std::isfinite(config.depth.finger_clearance_mm) || config.depth.finger_clearance_mm < 0.0F
+       || config.depth.surface_scan_radius_px <= 0 || config.depth.surface_scan_stride_px <= 0
+       || !std::isfinite(config.depth.hand_exclusion_px) || config.depth.hand_exclusion_px < 0.0F
+       || !std::isfinite(config.depth.surface_depth_window_mm)
+       || config.depth.surface_depth_window_mm <= 0.0F
        || !std::isfinite(config.fingertip.depth_probe_near_ratio)
        || !std::isfinite(config.fingertip.depth_probe_far_ratio)
        || config.fingertip.depth_probe_near_ratio <= 0.0F
@@ -97,6 +101,14 @@ AppConfig load_app_config(const std::filesystem::path& path) {
         optional_value<std::size_t>(root, "depth", "invalid_reset_frames", config.depth.invalid_reset_frames);
     config.depth.finger_clearance_mm =
         optional_value<float>(root, "depth", "finger_clearance_mm", config.depth.finger_clearance_mm);
+    config.depth.surface_scan_radius_px =
+        optional_value<int>(root, "depth", "surface_scan_radius_px", config.depth.surface_scan_radius_px);
+    config.depth.surface_scan_stride_px =
+        optional_value<int>(root, "depth", "surface_scan_stride_px", config.depth.surface_scan_stride_px);
+    config.depth.hand_exclusion_px =
+        optional_value<float>(root, "depth", "hand_exclusion_px", config.depth.hand_exclusion_px);
+    config.depth.surface_depth_window_mm =
+        optional_value<float>(root, "depth", "surface_depth_window_mm", config.depth.surface_depth_window_mm);
     config.fingertip.min_cutoff_hz =
         optional_value<float>(root, "fingertip", "min_cutoff_hz", config.fingertip.min_cutoff_hz);
     config.fingertip.beta = optional_value<float>(root, "fingertip", "beta", config.fingertip.beta);
@@ -155,6 +167,10 @@ void save_app_config(const AppConfig& config, const std::filesystem::path& path)
     emitter << YAML::Key << "max_jump_mm" << YAML::Value << config.depth.max_jump_mm;
     emitter << YAML::Key << "invalid_reset_frames" << YAML::Value << config.depth.invalid_reset_frames;
     emitter << YAML::Key << "finger_clearance_mm" << YAML::Value << config.depth.finger_clearance_mm;
+    emitter << YAML::Key << "surface_scan_radius_px" << YAML::Value << config.depth.surface_scan_radius_px;
+    emitter << YAML::Key << "surface_scan_stride_px" << YAML::Value << config.depth.surface_scan_stride_px;
+    emitter << YAML::Key << "hand_exclusion_px" << YAML::Value << config.depth.hand_exclusion_px;
+    emitter << YAML::Key << "surface_depth_window_mm" << YAML::Value << config.depth.surface_depth_window_mm;
     emitter << YAML::EndMap;
     emitter << YAML::Key << "fingertip" << YAML::Value << YAML::BeginMap;
     emitter << YAML::Key << "min_cutoff_hz" << YAML::Value << config.fingertip.min_cutoff_hz;

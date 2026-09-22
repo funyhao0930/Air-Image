@@ -90,30 +90,45 @@ void text_line(aerial_touch::Utf8TextCanvas& canvas,
     canvas.draw(text, { 12, 10 + row * 34 }, color);
 }
 
-// Collect table points from a ring around the fingertip. At typical working distances a finger is
-// only some 12-19 px across, so a ring a few pixels wide sits largely *on the finger*, and that
-// contamination is what starves the plane fit of its required inlier ratio. `minimum_depth_mm` cuts
-// it away: the finger rises off the surface behind the tip, so finger pixels read nearer to the
-// camera than the tip, while table pixels read at the tip's depth or farther -- including when the
-// fingertip is resting on the surface, which is why the cut sits just in front of the tip rather
-// than beyond it. The filter runs inside sample_depth_annulus_mm so the widening-radius retry
-// counts surviving samples, not raw ones.
+// Collect target-surface points around where the operator is pointing.
+//
+// The region has to be a large fraction of the keypad. Sampling a ring a few pixels wide -- which is
+// what this did -- yields thousands of points strung along a ribbon millimetres across; a plane fits
+// such a ribbon to a fraction of a millimetre while its rotation about the ribbon's axis stays
+// essentially free, so the scan reported a perfect RMS and handed back a normal tilted by degrees.
+// Across a 200 mm keypad that is centimetres of error, and it is exactly what put the projected
+// keypad off the physical target.
+//
+// The hand is excluded by landmark proximity, not by depth: a hand laid flat against the target is
+// nearly coplanar with it, so no depth threshold can separate the two. The depth window keeps the
+// samples on the surface being pointed at instead of the desk or the far wall.
 std::vector<aerial_touch::Vec3> surface_patch_samples(const aerial_touch::OrbbecCamera& camera,
                                                        const aerial_touch::RgbdFrame& frame,
+                                                       const aerial_touch::HandObservation& hand,
                                                        const aerial_touch::Vec2 fingertip_pixel,
-                                                       const int depth_sample_radius,
-                                                       const float minimum_depth_mm) {
-    const int inner_radius = std::max(2, depth_sample_radius + 1);
-    std::vector<aerial_touch::DepthPixelSample> depth_samples;
-    for(const int outer_radius : { inner_radius + 4, inner_radius + 8, inner_radius + 12, inner_radius + 20 }) {
-        depth_samples = aerial_touch::sample_depth_annulus_mm(
-            frame.depth, frame.depth_width, frame.depth_height, static_cast<int>(std::lround(fingertip_pixel.x)),
-            static_cast<int>(std::lround(fingertip_pixel.y)), inner_radius, outer_radius, frame.depth_unit_mm,
-            minimum_depth_mm);
-        if(depth_samples.size() >= kMinimumSurfacePatchSamples) {
-            break;
+                                                       const float fingertip_depth_mm,
+                                                       const aerial_touch::DepthSamplingConfig& depth_config) {
+    std::vector<aerial_touch::Vec2> hand_points;
+    if(hand.detected) {
+        const int count = std::min(hand.landmark_count, static_cast<int>(hand.landmarks.size()));
+        hand_points.reserve(static_cast<std::size_t>(std::max(0, count)));
+        for(int index = 0; index < count; ++index) {
+            hand_points.push_back({ hand.landmarks[index].x * static_cast<float>(frame.color_width),
+                                    hand.landmarks[index].y * static_cast<float>(frame.color_height) });
         }
     }
+
+    aerial_touch::SurfaceSampleRegion region;
+    region.center_x = static_cast<int>(std::lround(fingertip_pixel.x));
+    region.center_y = static_cast<int>(std::lround(fingertip_pixel.y));
+    region.radius_px = depth_config.surface_scan_radius_px;
+    region.stride_px = depth_config.surface_scan_stride_px;
+    region.minimum_depth_mm = std::max(0.0F, fingertip_depth_mm - depth_config.finger_clearance_mm);
+    region.maximum_depth_mm = fingertip_depth_mm + depth_config.surface_depth_window_mm;
+
+    const auto depth_samples = aerial_touch::sample_depth_surface_grid_mm(
+        frame.depth, frame.depth_width, frame.depth_height, region, frame.depth_unit_mm, hand_points,
+        depth_config.hand_exclusion_px);
     if(depth_samples.size() < kMinimumSurfacePatchSamples) {
         return {};
     }
@@ -596,16 +611,8 @@ int main(int argc, char** argv) {
             if(scanning_surface) {
                 std::vector<aerial_touch::Vec3> samples;
                 if(confirmed_tip && filtered_tip_pixel.has_value() && tip_depth_mm.has_value()) {
-                    // Anchor the cut just *in front of* the fingertip, not beyond it. The finger
-                    // rises away from the surface behind the tip, so its pixels read nearer to the
-                    // camera than the tip does, while table pixels read at the tip's depth or
-                    // farther. Requiring the table to be some margin beyond the tip would collect
-                    // nothing at all whenever the finger is resting on the surface -- which is
-                    // exactly how the guide tells the operator to run the sweep.
-                    const float finger_cut_mm =
-                        std::max(0.0F, *tip_depth_mm - config.depth.finger_clearance_mm);
-                    samples = surface_patch_samples(camera, *frame, *filtered_tip_pixel, config.depth.sample_radius,
-                                                    finger_cut_mm);
+                    samples = surface_patch_samples(camera, *frame, hand, *filtered_tip_pixel, *tip_depth_mm,
+                                                    config.depth);
                 }
                 const auto progress = surface_scan.add(samples, frame->timestamp_ms);
                 if(progress.state == aerial_touch::SurfaceScanState::Complete) {
@@ -616,11 +623,17 @@ int main(int argc, char** argv) {
                 else if(progress.state == aerial_touch::SurfaceScanState::Failed) {
                     calibration_surface.reset();
                     scanning_surface = false;
-                    status = u8"表面掃描失敗：周邊深度不足或混入不同平面；請沿鍵盤區域重新掃描";
+                    status = u8"表面掃描失敗：深度不足、混入不同平面，或掃過的範圍太窄；"
+                             u8"請把整個鍵盤區域都掃到，尤其是四個角落";
                 }
                 else {
-                    status = std::string(u8"表面掃描中：已收集 ") + std::to_string(progress.sample_count)
-                             + u8" 個深度樣本；請沿鍵盤區域移動食指";
+                    std::ostringstream scan_text;
+                    scan_text << std::fixed << std::setprecision(0) << u8"表面掃描中：已收集 "
+                              << progress.sample_count << u8" 個深度樣本，涵蓋範圍 "
+                              << progress.quality.minor_extent_mm << " / "
+                              << aerial_touch::SurfacePlaneFitConfig{}.minimum_extent_mm
+                              << u8" mm；請沿鍵盤區域移動食指";
+                    status = scan_text.str();
                 }
             }
 
@@ -784,11 +797,16 @@ int main(int argc, char** argv) {
                 const auto& surface_progress = surface_scan.progress();
                 if(calibrating && (scanning_surface || calibration_surface.has_value())) {
                     std::ostringstream surface_text;
+                    // The spread matters as much as the residual: a sweep confined to a narrow band
+                    // fits some plane perfectly while leaving its tilt undetermined, so the operator
+                    // needs to watch this number grow, not just the RMS.
                     surface_text << std::fixed << std::setprecision(1) << u8"表面："
                                  << (scanning_surface ? u8"掃描中" : u8"已建立") << u8"；樣本 "
                                  << surface_progress.sample_count << u8"；內點 "
                                  << surface_progress.quality.inlier_samples << u8"；RMS "
-                                 << surface_progress.quality.rms_residual_mm << u8" mm";
+                                 << surface_progress.quality.rms_residual_mm << u8" mm；範圍 "
+                                 << surface_progress.quality.minor_extent_mm << " / "
+                                 << aerial_touch::SurfacePlaneFitConfig{}.minimum_extent_mm << " mm";
                     text_line(canvas, surface_text.str(), 9, { 180, 220, 255 });
                 }
                 text_line(canvas, u8"C：校正 | S：參數 | 空白鍵：開始掃描或取樣 | Enter：完成校正 | R：重設 | Q/Esc：離開", 10);

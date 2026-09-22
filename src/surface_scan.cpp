@@ -25,8 +25,17 @@ SurfaceScanCollector::SurfaceScanCollector(const SurfaceScanConfig config) : con
     }
 }
 
+std::size_t SurfaceScanCollector::next_reservoir_slot() {
+    // Deterministic LCG (Numerical Recipes constants): the scan must replay identically for a given
+    // input sequence so the tests and any recorded session stay reproducible.
+    random_state_ = random_state_ * 1664525U + 1013904223U;
+    return static_cast<std::size_t>((random_state_ >> 16U) % seen_samples_);
+}
+
 void SurfaceScanCollector::begin(const std::int64_t timestamp_ms) {
     samples_.clear();
+    seen_samples_ = 0U;
+    random_state_ = 0x9E3779B97F4A7C15ULL;
     surface_plane_.reset();
     started_at_ms_ = timestamp_ms;
     last_fit_at_ms_.reset();
@@ -39,14 +48,23 @@ SurfaceScanProgress SurfaceScanCollector::add(const std::vector<Vec3>& samples, 
     }
 
     for(const Vec3 sample : samples) {
-        if(samples_.size() >= config_.maximum_samples) {
-            break;
+        if(!finite(sample)) {
+            continue;
         }
-        if(finite(sample)) {
+        ++seen_samples_;
+        if(samples_.size() < config_.maximum_samples) {
             samples_.push_back(sample);
+            continue;
+        }
+        // Reservoir replacement rather than dropping everything past the cap. The cap fills within
+        // about a second, so the old behaviour fitted the plane to the first moment of the sweep and
+        // silently discarded the rest of the area the operator was asked to cover.
+        const std::size_t slot = next_reservoir_slot();
+        if(slot < samples_.size()) {
+            samples_[slot] = sample;
         }
     }
-    progress_.sample_count = samples_.size();
+    progress_.sample_count = static_cast<std::size_t>(seen_samples_);
     progress_.quality.total_samples = samples_.size();
     const std::int64_t elapsed_ms = std::max<std::int64_t>(0, timestamp_ms - *started_at_ms_);
     const bool timestamp_moved_backward = last_fit_at_ms_.has_value() && timestamp_ms < *last_fit_at_ms_;
@@ -57,9 +75,12 @@ SurfaceScanProgress SurfaceScanCollector::add(const std::vector<Vec3>& samples, 
         last_fit_at_ms_ = timestamp_ms;
         SurfacePlaneFitQuality quality;
         const auto plane = SurfacePlane::fit(samples_, config_.plane_fit, &quality);
+        // Report the attempt's quality either way. A sweep that is failing only on extent looks
+        // identical to one failing on noise unless the operator can watch the spread grow.
+        progress_.quality = quality;
         if(plane.has_value()) {
             surface_plane_ = *plane;
-            progress_ = { SurfaceScanState::Complete, samples_.size(), quality };
+            progress_ = { SurfaceScanState::Complete, static_cast<std::size_t>(seen_samples_), quality };
             return progress_;
         }
     }
@@ -71,6 +92,8 @@ SurfaceScanProgress SurfaceScanCollector::add(const std::vector<Vec3>& samples, 
 
 void SurfaceScanCollector::clear() {
     samples_.clear();
+    seen_samples_ = 0U;
+    random_state_ = 0x9E3779B97F4A7C15ULL;
     started_at_ms_.reset();
     last_fit_at_ms_.reset();
     surface_plane_.reset();

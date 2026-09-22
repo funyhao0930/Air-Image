@@ -473,6 +473,9 @@ bool yaml_config_loads_all_runtime_thresholds() {
            && approximately_equal(config.depth.max_jump_mm, 80.0F)
            && config.depth.invalid_reset_frames == 3U
            && approximately_equal(config.depth.finger_clearance_mm, 7.5F)
+           && config.depth.surface_scan_radius_px == 120 && config.depth.surface_scan_stride_px == 4
+           && approximately_equal(config.depth.hand_exclusion_px, 33.0F)
+           && approximately_equal(config.depth.surface_depth_window_mm, 180.0F)
            && approximately_equal(config.fingertip.min_cutoff_hz, 1.0F)
            && approximately_equal(config.fingertip.beta, 0.12F)
            && approximately_equal(config.fingertip.derivative_cutoff_hz, 1.0F)
@@ -516,6 +519,10 @@ bool yaml_config_round_trips_through_save() {
            && approximately_equal(restored.depth.max_jump_mm, source.depth.max_jump_mm)
            && restored.depth.invalid_reset_frames == source.depth.invalid_reset_frames
            && approximately_equal(restored.depth.finger_clearance_mm, source.depth.finger_clearance_mm)
+           && restored.depth.surface_scan_radius_px == source.depth.surface_scan_radius_px
+           && restored.depth.surface_scan_stride_px == source.depth.surface_scan_stride_px
+           && approximately_equal(restored.depth.hand_exclusion_px, source.depth.hand_exclusion_px)
+           && approximately_equal(restored.depth.surface_depth_window_mm, source.depth.surface_depth_window_mm)
            && approximately_equal(restored.fingertip.min_cutoff_hz, source.fingertip.min_cutoff_hz)
            && approximately_equal(restored.fingertip.beta, source.fingertip.beta)
            && approximately_equal(restored.fingertip.derivative_cutoff_hz, source.fingertip.derivative_cutoff_hz)
@@ -670,6 +677,7 @@ bool legacy_yaml_uses_defaults_for_new_stabilization_fields() {
                         && config.calibration.required_samples == 18U
                         && config.touch.dwell_ms == 350
                         && approximately_equal(config.depth.finger_clearance_mm, 3.0F)
+                        && config.depth.surface_scan_radius_px == 150
                         && approximately_equal(config.fingertip.depth_probe_near_ratio, 0.35F);
     }
     catch(const std::exception&) {
@@ -880,30 +888,185 @@ bool fingertip_probe_reports_nothing_without_a_usable_near_sample() {
 
 // --- surface scan sampling --------------------------------------------------------------------
 
-// The ring around the fingertip lands partly on the finger; only pixels behind it are table.
-bool annulus_sampling_rejects_samples_in_front_of_the_fingertip() {
-    const int width = 41;
-    const int height = 41;
+// Builds a depth image of a flat target with a "hand" laid across it at nearly the same depth.
+std::vector<std::uint16_t> target_with_hand(const int width, const int height, const int hand_left,
+                                            const int hand_right) {
     std::vector<std::uint16_t> depth(static_cast<std::size_t>(width * height), 1000U);
-    // Left half of the ring sits on the finger, 80 mm nearer the camera than the table.
     for(int y = 0; y < height; ++y) {
-        for(int x = 0; x < 20; ++x) {
-            depth[static_cast<std::size_t>(y * width + x)] = 920U;
+        for(int x = hand_left; x < hand_right && x < width; ++x) {
+            depth[static_cast<std::size_t>(y * width + x)] = 994U;  // 6 mm nearer: a hand lying flat
         }
     }
+    return depth;
+}
+
+// A hand held against the target is nearly coplanar with it, so the scan has to exclude it by
+// landmark proximity; no depth threshold can separate 6 mm of finger from the surface behind it.
+bool surface_grid_sampling_excludes_pixels_near_hand_landmarks() {
+    const int width = 201;
+    const int height = 201;
+    const auto depth = target_with_hand(width, height, 90, 111);
+
+    aerial_touch::SurfaceSampleRegion region;
+    region.center_x = 100;
+    region.center_y = 100;
+    region.radius_px = 80;
+    region.stride_px = 4;
+
+    std::vector<aerial_touch::Vec2> landmarks;
+    for(int y = 0; y <= 200; y += 10) {
+        landmarks.push_back({ 100.0F, static_cast<float>(y) });
+    }
+
     const auto unfiltered =
-        aerial_touch::sample_depth_annulus_mm(depth, width, height, 20, 20, 3, 10, 1.0F);
+        aerial_touch::sample_depth_surface_grid_mm(depth, width, height, region, 1.0F, {}, 0.0F);
     const auto filtered =
-        aerial_touch::sample_depth_annulus_mm(depth, width, height, 20, 20, 3, 10, 1.0F, 926.0F);
-    if(unfiltered.size() <= filtered.size() || filtered.empty()) {
+        aerial_touch::sample_depth_surface_grid_mm(depth, width, height, region, 1.0F, landmarks, 14.0F);
+    if(unfiltered.empty() || filtered.empty() || filtered.size() >= unfiltered.size()) {
         return false;
     }
     for(const auto& sample : filtered) {
-        if(sample.depth_mm < 926.0F) {
+        if(sample.depth_mm != 1000.0F) {
+            return false;  // a hand pixel survived the exclusion
+        }
+    }
+    return true;
+}
+
+bool surface_grid_sampling_drops_background_beyond_the_depth_window() {
+    const int width = 101;
+    const int height = 101;
+    std::vector<std::uint16_t> depth(static_cast<std::size_t>(width * height), 1000U);
+    for(int y = 0; y < height; ++y) {
+        for(int x = 0; x < 30; ++x) {
+            depth[static_cast<std::size_t>(y * width + x)] = 2200U;  // far wall past the target
+        }
+    }
+
+    aerial_touch::SurfaceSampleRegion region;
+    region.center_x = 50;
+    region.center_y = 50;
+    region.radius_px = 50;
+    region.stride_px = 3;
+    region.minimum_depth_mm = 940.0F;
+    region.maximum_depth_mm = 1150.0F;
+
+    const auto samples =
+        aerial_touch::sample_depth_surface_grid_mm(depth, width, height, region, 1.0F, {}, 0.0F);
+    if(samples.empty()) {
+        return false;
+    }
+    for(const auto& sample : samples) {
+        if(sample.depth_mm > 1150.0F || sample.depth_mm < 940.0F) {
             return false;
         }
     }
     return true;
+}
+
+bool surface_grid_sampling_covers_the_requested_radius() {
+    const int width = 401;
+    const int height = 401;
+    const std::vector<std::uint16_t> depth(static_cast<std::size_t>(width * height), 1000U);
+
+    aerial_touch::SurfaceSampleRegion region;
+    region.center_x = 200;
+    region.center_y = 200;
+    region.radius_px = 150;
+    region.stride_px = 5;
+
+    const auto samples =
+        aerial_touch::sample_depth_surface_grid_mm(depth, width, height, region, 1.0F, {}, 0.0F);
+    if(samples.size() < 2000U) {
+        return false;
+    }
+    int min_x = width, max_x = -1, min_y = height, max_y = -1;
+    for(const auto& sample : samples) {
+        min_x = std::min(min_x, sample.x);
+        max_x = std::max(max_x, sample.x);
+        min_y = std::min(min_y, sample.y);
+        max_y = std::max(max_y, sample.y);
+        const int dx = sample.x - 200;
+        const int dy = sample.y - 200;
+        if(dx * dx + dy * dy > 150 * 150) {
+            return false;  // leaked outside the disc
+        }
+    }
+    return (max_x - min_x) >= 290 && (max_y - min_y) >= 290;
+}
+
+// --- surface plane conditioning ---------------------------------------------------------------
+
+// The failure that put the projected keypad off the physical target: points swept along a narrow
+// ribbon fit a plane to a fraction of a millimetre while leaving the normal free to rotate about
+// the ribbon. Residual and inlier count both report a flawless fit, so the extent check is the only
+// thing that can catch it.
+bool surface_plane_fit_rejects_a_narrow_ribbon_of_samples() {
+    std::vector<aerial_touch::Vec3> ribbon;
+    for(int step = 0; step < 400; ++step) {
+        const float along = static_cast<float>(step) * 0.5F;                  // 200 mm long
+        const float across = static_cast<float>(step % 5) * 1.25F - 2.5F;     // 5 mm wide
+        ribbon.push_back({ along, across, 800.0F });
+    }
+
+    aerial_touch::SurfacePlaneFitConfig config;
+    config.minimum_samples = 60U;
+    aerial_touch::SurfacePlaneFitQuality quality;
+    const auto plane = aerial_touch::SurfacePlane::fit(ribbon, config, &quality);
+
+    // It must fail on extent alone: the residual is essentially perfect.
+    return !plane.has_value() && quality.inlier_samples >= 300U && quality.rms_residual_mm < 0.5F
+           && quality.minor_extent_mm < config.minimum_extent_mm;
+}
+
+bool surface_plane_fit_accepts_a_well_spread_patch() {
+    std::vector<aerial_touch::Vec3> patch;
+    for(int row = 0; row < 20; ++row) {
+        for(int column = 0; column < 20; ++column) {
+            patch.push_back({ static_cast<float>(column) * 8.0F, static_cast<float>(row) * 8.0F, 800.0F });
+        }
+    }
+
+    aerial_touch::SurfacePlaneFitQuality quality;
+    const auto plane = aerial_touch::SurfacePlane::fit(patch, {}, &quality);
+    return plane.has_value() && quality.minor_extent_mm >= 35.0F;
+}
+
+// --- surface scan collection -------------------------------------------------------------------
+
+// The cap fills within about a second of sweeping, so dropping everything past it fitted the plane
+// to the first moment of the sweep and discarded the rest of the area the operator was asked to
+// cover. Here the opening burst is a narrow ribbon that cannot determine a normal; only if the
+// later, well-spread burst also reaches the reservoir can the scan ever complete.
+bool surface_scan_keeps_sampling_after_the_reservoir_is_full() {
+    aerial_touch::SurfaceScanConfig config;
+    config.minimum_duration_ms = 0;
+    config.fit_interval_ms = 0;
+    config.maximum_samples = 200U;
+    config.plane_fit.minimum_samples = 60U;
+    aerial_touch::SurfaceScanCollector scan(config);
+    scan.begin(0);
+
+    std::vector<aerial_touch::Vec3> ribbon;
+    for(int index = 0; index < 400; ++index) {
+        ribbon.push_back({ static_cast<float>(index) * 0.5F, static_cast<float>(index % 3), 800.0F });
+    }
+    const auto after_ribbon = scan.add(ribbon, 10);
+    if(after_ribbon.state != aerial_touch::SurfaceScanState::Collecting
+       || after_ribbon.quality.minor_extent_mm >= config.plane_fit.minimum_extent_mm) {
+        return false;  // the ribbon must not be accepted as a determined plane
+    }
+
+    std::vector<aerial_touch::Vec3> patch;
+    for(int index = 0; index < 400; ++index) {
+        patch.push_back({ static_cast<float>(index % 20) * 10.0F, static_cast<float>(index / 20) * 5.0F, 800.0F });
+    }
+    const auto after_patch = scan.add(patch, 20);
+
+    return after_patch.state == aerial_touch::SurfaceScanState::Complete
+           && after_patch.sample_count == 800U
+           && after_patch.quality.total_samples == 200U
+           && after_patch.quality.minor_extent_mm >= config.plane_fit.minimum_extent_mm;
 }
 
 // --- touch triggering -------------------------------------------------------------------------
@@ -1074,7 +1237,7 @@ bool config_change_discards_stale_approach_evidence() {
 bool run_interaction_core_tests() {
     // Every case runs and names itself on failure. The old form was one long && chain, so the first
     // failure short-circuited the rest and the suite reported nothing but a non-zero exit code.
-    const std::array<std::pair<const char*, bool (*)()>, 61> tests{ {
+    const std::array<std::pair<const char*, bool (*)()>, 66> tests{ {
         { "plane_projection_uses_camera_facing_normal", &plane_projection_uses_camera_facing_normal },
         { "plane_uses_configured_minimum_point_distance", &plane_uses_configured_minimum_point_distance },
         { "plane_rejects_nearly_collinear_points", &plane_rejects_nearly_collinear_points },
@@ -1090,7 +1253,12 @@ bool run_interaction_core_tests() {
         { "surface_scan_fails_after_timeout_without_a_valid_plane", &surface_scan_fails_after_timeout_without_a_valid_plane },
         { "surface_scan_throttles_failed_plane_fit_attempts", &surface_scan_throttles_failed_plane_fit_attempts },
         { "surface_scan_retries_after_camera_timestamp_moves_backward", &surface_scan_retries_after_camera_timestamp_moves_backward },
-        { "annulus_sampling_rejects_samples_in_front_of_the_fingertip", &annulus_sampling_rejects_samples_in_front_of_the_fingertip },
+        { "surface_grid_sampling_excludes_pixels_near_hand_landmarks", &surface_grid_sampling_excludes_pixels_near_hand_landmarks },
+        { "surface_grid_sampling_drops_background_beyond_the_depth_window", &surface_grid_sampling_drops_background_beyond_the_depth_window },
+        { "surface_grid_sampling_covers_the_requested_radius", &surface_grid_sampling_covers_the_requested_radius },
+        { "surface_plane_fit_rejects_a_narrow_ribbon_of_samples", &surface_plane_fit_rejects_a_narrow_ribbon_of_samples },
+        { "surface_plane_fit_accepts_a_well_spread_patch", &surface_plane_fit_accepts_a_well_spread_patch },
+        { "surface_scan_keeps_sampling_after_the_reservoir_is_full", &surface_scan_keeps_sampling_after_the_reservoir_is_full },
         { "fingertip_probe_extrapolates_tip_depth_from_the_joint_gradient", &fingertip_probe_extrapolates_tip_depth_from_the_joint_gradient },
         { "fingertip_probe_falls_back_when_the_finger_points_at_the_camera", &fingertip_probe_falls_back_when_the_finger_points_at_the_camera },
         { "fingertip_probe_clamps_a_runaway_gradient", &fingertip_probe_clamps_a_runaway_gradient },

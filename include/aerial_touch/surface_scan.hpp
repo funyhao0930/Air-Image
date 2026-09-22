@@ -42,8 +42,12 @@ public:
     const std::optional<SurfacePlane>& surface_plane() const;
 
 private:
+    std::size_t next_reservoir_slot();
+
     SurfaceScanConfig config_;
     std::vector<Vec3> samples_;
+    std::uint64_t seen_samples_{ 0U };
+    std::uint64_t random_state_{ 0U };
     std::optional<std::int64_t> started_at_ms_;
     std::optional<std::int64_t> last_fit_at_ms_;
     std::optional<SurfacePlane> surface_plane_;

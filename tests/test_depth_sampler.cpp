@@ -37,16 +37,28 @@ bool depth_sampler_takes_the_median_of_valid_pixels() {
     return check(!invalid_sample.has_value(), "all-zero depth yields no sample") && passed;
 }
 
-bool depth_annulus_excludes_the_centre_disc() {
-    std::vector<std::uint16_t> annulus_depth(81U, 1000U);
-    annulus_depth[static_cast<std::size_t>(4 * 9 + 4)] = 850U;
-    const auto annulus = aerial_touch::sample_depth_annulus_mm(annulus_depth, 9, 9, 4, 4, 1, 3, 1.0F);
-    if(!check(!annulus.empty(), "annulus returns samples")) {
+bool surface_grid_stays_inside_its_disc_and_skips_excluded_points() {
+    std::vector<std::uint16_t> depth(81U, 1000U);
+    depth[static_cast<std::size_t>(4 * 9 + 4)] = 850U;  // the pointing fingertip itself
+
+    aerial_touch::SurfaceSampleRegion region;
+    region.center_x = 4;
+    region.center_y = 4;
+    region.radius_px = 4;
+    region.stride_px = 1;
+
+    const std::vector<aerial_touch::Vec2> excluded{ { 4.0F, 4.0F } };
+    const auto samples =
+        aerial_touch::sample_depth_surface_grid_mm(depth, 9, 9, region, 1.0F, excluded, 1.5F);
+    if(!check(!samples.empty(), "surface grid returns samples")) {
         return false;
     }
-    for(const auto& sample : annulus) {
-        if(!check(!(sample.x == 4 && sample.y == 4), "annulus skips the centre pixel")
-           || !check(sample.depth_mm == 1000.0F, "annulus reports the ring depth")) {
+    for(const auto& sample : samples) {
+        const int dx = sample.x - 4;
+        const int dy = sample.y - 4;
+        if(!check(dx * dx + dy * dy <= 16, "surface grid stays inside the disc")
+           || !check(!(sample.x == 4 && sample.y == 4), "surface grid skips the excluded point")
+           || !check(sample.depth_mm == 1000.0F, "surface grid reports the surface depth")) {
             return false;
         }
     }
@@ -57,7 +69,7 @@ bool depth_annulus_excludes_the_centre_disc() {
 
 int main() {
     bool passed = depth_sampler_takes_the_median_of_valid_pixels();
-    passed = depth_annulus_excludes_the_centre_disc() && passed;
+    passed = surface_grid_stays_inside_its_disc_and_skips_excluded_points() && passed;
     passed = run_interaction_core_tests() && passed;
     passed = run_hud_text_tests() && passed;
     passed = run_signal_stability_tests() && passed;

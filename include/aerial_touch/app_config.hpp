@@ -20,6 +20,16 @@ struct DepthSamplingConfig {
     // to the camera; table pixels read at the tip's depth or farther, including when the fingertip
     // is resting on the surface.
     float finger_clearance_mm{ 3.0F };
+    // Radius of the surface-scan sampling disc, in pixels. This must cover a large fraction of the
+    // keypad: a plane fitted to a narrow strip of points leaves its normal free to rotate about the
+    // strip, which no residual or inlier count can detect.
+    int surface_scan_radius_px{ 150 };
+    int surface_scan_stride_px{ 5 };
+    // Pixels within this distance of any hand landmark are never treated as surface. A hand held
+    // against the target is nearly coplanar with it, so depth alone cannot separate them.
+    float hand_exclusion_px{ 40.0F };
+    // Samples farther behind the fingertip than this are background, not the target surface.
+    float surface_depth_window_mm{ 150.0F };
 };
 
 struct FingertipConfig {

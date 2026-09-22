@@ -158,7 +158,62 @@ bool valid_config(const SurfacePlaneFitConfig config) {
     return config.minimum_samples >= 3U && std::isfinite(config.minimum_inlier_ratio)
            && config.minimum_inlier_ratio > 0.0F && config.minimum_inlier_ratio <= 1.0F
            && std::isfinite(config.inlier_threshold_mm) && config.inlier_threshold_mm > 0.0F
-           && std::isfinite(config.maximum_rms_residual_mm) && config.maximum_rms_residual_mm > 0.0F;
+           && std::isfinite(config.maximum_rms_residual_mm) && config.maximum_rms_residual_mm > 0.0F
+           && std::isfinite(config.minimum_extent_mm) && config.minimum_extent_mm >= 0.0F;
+}
+
+// 2 sigma of the inliers along the narrower of the two in-plane principal directions. A sample set
+// swept along a ribbon returns roughly its ribbon width here, whatever its residual looks like.
+float minor_in_plane_extent(const std::vector<Vec3>& points,
+                            const std::vector<std::size_t>& indices,
+                            const Vec3 origin,
+                            const Vec3 normal) {
+    if(indices.size() < 2U) {
+        return 0.0F;
+    }
+
+    // Any orthonormal pair spanning the plane will do; the eigen-decomposition below is basis free.
+    const Vec3 seed = std::fabs(normal.x) < 0.9F ? Vec3{ 1.0F, 0.0F, 0.0F } : Vec3{ 0.0F, 1.0F, 0.0F };
+    const auto axis_u = normalized(subtract(seed, scale(normal, dot(seed, normal))));
+    if(!axis_u.has_value()) {
+        return 0.0F;
+    }
+    const auto axis_v = normalized(cross(normal, *axis_u));
+    if(!axis_v.has_value()) {
+        return 0.0F;
+    }
+
+    double sum_u = 0.0;
+    double sum_v = 0.0;
+    for(const std::size_t index : indices) {
+        const Vec3 offset = subtract(points[index], origin);
+        sum_u += dot(offset, *axis_u);
+        sum_v += dot(offset, *axis_v);
+    }
+    const double count = static_cast<double>(indices.size());
+    const double mean_u = sum_u / count;
+    const double mean_v = sum_v / count;
+
+    double cov_uu = 0.0;
+    double cov_uv = 0.0;
+    double cov_vv = 0.0;
+    for(const std::size_t index : indices) {
+        const Vec3 offset = subtract(points[index], origin);
+        const double u = dot(offset, *axis_u) - mean_u;
+        const double v = dot(offset, *axis_v) - mean_v;
+        cov_uu += u * u;
+        cov_uv += u * v;
+        cov_vv += v * v;
+    }
+    cov_uu /= count;
+    cov_uv /= count;
+    cov_vv /= count;
+
+    // Smaller eigenvalue of the symmetric 2x2 covariance.
+    const double trace = cov_uu + cov_vv;
+    const double gap = std::sqrt(std::max(0.0, (cov_uu - cov_vv) * (cov_uu - cov_vv) + 4.0 * cov_uv * cov_uv));
+    const double smallest = std::max(0.0, 0.5 * (trace - gap));
+    return 2.0F * static_cast<float>(std::sqrt(smallest));
 }
 
 }  // namespace
@@ -241,12 +296,18 @@ std::optional<SurfacePlane> SurfacePlane::fit(const std::vector<Vec3>& samples,
     }
     refined_origin = centroid(valid_samples, refined_inliers);
     const float residual = rms_residual(valid_samples, refined_inliers, refined_origin, normal);
-    if(!std::isfinite(residual) || residual > config.maximum_rms_residual_mm) {
-        return std::nullopt;
-    }
+    const float extent = minor_in_plane_extent(valid_samples, refined_inliers, refined_origin, normal);
     if(quality != nullptr) {
         quality->inlier_samples = refined_inliers.size();
         quality->rms_residual_mm = residual;
+        quality->minor_extent_mm = extent;
+    }
+    if(!std::isfinite(residual) || residual > config.maximum_rms_residual_mm) {
+        return std::nullopt;
+    }
+    if(!std::isfinite(extent) || extent < config.minimum_extent_mm) {
+        // Well-fitted but not actually determined: the normal is free to rotate about the long axis.
+        return std::nullopt;
     }
     return SurfacePlane(refined_origin, normal);
 }
